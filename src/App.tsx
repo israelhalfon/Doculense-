@@ -1,250 +1,132 @@
-import React, { useState, useRef, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
-  Upload,
-  FileText,
-  Search,
-  Copy,
-  Check,
-  ZoomIn,
-  ZoomOut,
-  RotateCw,
-  Sliders,
-  RefreshCw,
-  Edit3,
-  Save,
-  Plus,
-  Trash2,
-  Send,
-  Camera,
-  X,
-  AlertCircle,
-  FileSpreadsheet,
-  FolderOpen,
-  Smartphone,
-  LogOut,
-  File,
-  Mail,
-  Paperclip,
-  Clock,
+  Play,
+  Square,
+  RotateCcw,
+  Volume2,
+  Trophy,
   CheckCircle2,
+  XCircle,
+  Plus,
+  Minus,
+  Music,
+  Users,
+  ArrowLeft,
+  HelpCircle,
+  Upload,
+  Sliders,
+  Disc3,
+  Clock,
+  FastForward,
+  Search,
+  RefreshCw,
 } from "lucide-react";
-import type { User } from "firebase/auth";
 import {
-  DocumentRecord,
-  ExtractedDocumentData,
-  DocumentLineItem,
-} from "./types/document";
-import {
-  INITIAL_SAMPLE_DOCUMENTS,
-  formatDocumentToMarkdown,
-  formatDocumentToEmailHtml,
-} from "./data/sampleDocuments";
-import {
-  initAuth,
-  googleSignIn,
-  logout,
-  getAccessToken,
-  listDriveFiles,
-  downloadDriveFileAsDataUrl,
-  DriveFileItem,
-  sendEmailViaGmail,
-  utf8ToBase64,
-  EmailAttachmentPayload,
-} from "./services/googleDriveAuth";
+  SONGS_DATABASE,
+  SongTrack,
+  SongCategory,
+  CATEGORY_LABELS,
+  generateFourChoices,
+} from "./data/songsDatabase";
+import { soundEngine } from "./services/soundEngine";
 
-const STORAGE_KEY = "doculens_il_records_v2";
-const EMAIL_RECIPIENTS_STORAGE_KEY = "doculens_il_saved_emails_v1";
+const INITIAL_SNIPPET_SECONDS = 5;
+const EXTRA_TIME_STEP_SECONDS = 5;
+const MAX_SNIPPET_SECONDS = 25;
+const PLAYED_SONGS_STORAGE_KEY = "beatquiz_played_song_ids_v2";
+const CUSTOM_SONGS_STORAGE_KEY = "beatquiz_custom_songs_v2";
+const HERO_STAGE_IMAGE =
+  "/src/assets/images/music_quiz_stage_turntable_1792785344829.jpg";
 
-export interface SavedEmailRecipient {
-  email: string;
-  label?: string;
-  useCount: number;
-  lastUsedAt: number;
-  createdAt: number;
+export interface Team {
+  id: string;
+  name: string;
+  score: number;
+  correctCount: number;
+  wrongCount: number;
+  accentHex: string;
 }
 
-async function preparePayloadForGemini(
-  dataUrl: string,
-  originalMimeType: string,
-  textContent?: string
-): Promise<{
-  base64?: string;
-  mimeType: string;
-  textContent?: string;
-}> {
-  if (textContent) {
-    return {
-      mimeType: originalMimeType || "text/plain",
-      textContent,
-    };
-  }
-
-  // If PDF or raster image data URL (jpeg, png, webp)
-  if (
-    dataUrl.startsWith("data:") &&
-    !dataUrl.startsWith("data:image/svg+xml")
-  ) {
-    const [header, base64] = dataUrl.split(",");
-    const mimeMatch = header.match(/data:(.*?);/);
-    const detectedMime = mimeMatch
-      ? mimeMatch[1]
-      : originalMimeType || "application/pdf";
-    return {
-      base64,
-      mimeType: detectedMime,
-    };
-  }
-
-  // Rasterize SVG onto canvas as PNG for Gemini Vision
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth || 680;
-      canvas.height = img.naturalHeight || 860;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        reject(new Error("לא ניתן ליצור משטח ציור לעיבוד התמונה."));
-        return;
-      }
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0);
-      const pngDataUrl = canvas.toDataURL("image/png");
-      const base64 = pngDataUrl.split(",")[1];
-      resolve({ base64, mimeType: "image/png" });
-    };
-    img.onerror = () => reject(new Error("שגיאה בטעינת הקובץ לפענוח."));
-    img.src = dataUrl;
-  });
+export interface RoundHistoryItem {
+  turnId: number;
+  roundNumber: number;
+  teamName: string;
+  songTitle: string;
+  songArtist: string;
+  selectedTitle: string;
+  isCorrect: boolean;
+  pointsAwarded: number;
 }
 
-function OfficialGoogleSignInButton({
-  onClick,
-  disabled,
-  label = "Sign in with Google",
-}: {
-  onClick: () => void;
-  disabled?: boolean;
-  label?: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className="gsi-material-button disabled:opacity-50"
-    >
-      <div className="gsi-material-button-state"></div>
-      <div className="gsi-material-button-content-wrapper">
-        <div className="gsi-material-button-icon">
-          <svg
-            version="1.1"
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 0 48 48"
-            style={{ display: "block" }}
-          >
-            <path
-              fill="#EA4335"
-              d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"
-            ></path>
-            <path
-              fill="#4285F4"
-              d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"
-            ></path>
-            <path
-              fill="#FBBC05"
-              d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"
-            ></path>
-            <path
-              fill="#34A853"
-              d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"
-            ></path>
-            <path fill="none" d="M0 0h48v48H0z"></path>
-          </svg>
-        </div>
-        <span className="gsi-material-button-contents">{label}</span>
-        <span style={{ display: "none" }}>{label}</span>
-      </div>
-    </button>
-  );
-}
+type GameState = "TITLE_MENU" | "PLAYING" | "ROUND_SUMMARY" | "GAME_OVER";
+type ActiveTab = "arena" | "setup" | "library" | "rules";
+
+const DEFAULT_TEAM_PRESETS: { name: string; accentHex: string }[] = [
+  { name: "קבוצת האריות", accentHex: "#F59E0B" },
+  { name: "קבוצת הברק", accentHex: "#38BDF8" },
+  { name: "קבוצת הקצב", accentHex: "#10B981" },
+  { name: "קבוצת הסופות", accentHex: "#F43F5E" },
+  { name: "קבוצת הכוכבים", accentHex: "#A855F7" },
+  { name: "קבוצת הלהבה", accentHex: "#FB923C" },
+];
+
+const QUICK_IMPORT_ARTISTS = [
+  "עומר אדם",
+  "אייל גולן",
+  "שלמה ארצי",
+  "פאר טסי",
+  "עדן חסון",
+  "אושר כהן",
+  "נועה קירל",
+  "חנן בן ארי",
+  "משינה",
+  "כוורת",
+  "עידן רייכל",
+  "שרית חדד",
+  "רביד פלוטניק",
+  "טונה",
+  "ליאור נרקיס",
+  "דנה אינטרנשיונל",
+  "Queen",
+  "Coldplay",
+  "ABBA",
+  "Bruno Mars",
+];
 
 export default function App() {
-  const [documents, setDocuments] = useState<DocumentRecord[]>(() => {
+  // Navigation & Game State Machine
+  const [activeTab, setActiveTab] = useState<ActiveTab>("arena");
+  const [gameState, setGameState] = useState<GameState>("TITLE_MENU");
+
+  // Pre-defined Teams Configuration
+  const [teams, setTeams] = useState<Team[]>(() =>
+    DEFAULT_TEAM_PRESETS.slice(0, 3).map((preset, index) => ({
+      id: `team-${index + 1}`,
+      name: preset.name,
+      score: 0,
+      correctCount: 0,
+      wrongCount: 0,
+      accentHex: preset.accentHex,
+    }))
+  );
+
+  // Configurable Game Rules & Scoring Settings
+  const [totalRounds, setTotalRounds] = useState<number>(5);
+  const [pointsPerCorrect, setPointsPerCorrect] = useState<number>(10);
+  const [extraTimeCost, setExtraTimeCost] = useState<number>(5);
+  const [hintCost, setHintCost] = useState<number>(2);
+
+  // Time-Decay Scoring Mode Settings
+  const [isTimeDecayMode, setIsTimeDecayMode] = useState<boolean>(false);
+  const [guessTimeLimitSeconds, setGuessTimeLimitSeconds] =
+    useState<number>(10);
+
+  // Song Pool & Persistent Anti-Repetition History
+  const [customSongs, setCustomSongs] = useState<SongTrack[]>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY);
+      const saved = localStorage.getItem(CUSTOM_SONGS_STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      }
-    } catch {
-      // ignore storage errors
-    }
-    return INITIAL_SAMPLE_DOCUMENTS;
-  });
-
-  const [selectedId, setSelectedId] = useState<string>(
-    () => documents[0]?.id || INITIAL_SAMPLE_DOCUMENTS[0].id
-  );
-  const [activeView, setActiveView] = useState<
-    "workspace" | "ledger" | "markdown"
-  >("workspace");
-  const [categoryFilter, setCategoryFilter] = useState<
-    "all" | "invoice" | "note" | "menu"
-  >("all");
-  const [searchQuery, setSearchQuery] = useState("");
-
-  // Upload & AI Analysis state
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [customFocus, setCustomFocus] = useState("");
-  const [isDraggingOver, setIsDraggingOver] = useState(false);
-
-  // Image viewer controls
-  const [zoom, setZoom] = useState(1);
-  const [rotation, setRotation] = useState(0);
-  const [highContrastInk, setHighContrastInk] = useState(false);
-
-  // Edit mode state
-  const [isEditing, setIsEditing] = useState(false);
-  const [editDraft, setEditDraft] = useState<ExtractedDocumentData | null>(
-    null
-  );
-
-  // Copy feedback
-  const [copiedReport, setCopiedReport] = useState(false);
-
-  // Follow-up Q&A state
-  const [questionInput, setQuestionInput] = useState("");
-  const [isAsking, setIsAsking] = useState(false);
-
-  // Camera capture modal state
-  const [isCameraOpen, setIsCameraOpen] = useState(false);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-
-  // Google Drive state
-  const [isDriveModalOpen, setIsDriveModalOpen] = useState(false);
-  const [needsAuth, setNeedsAuth] = useState(true);
-  const [googleUser, setGoogleUser] = useState<User | null>(null);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [driveFiles, setDriveFiles] = useState<DriveFileItem[]>([]);
-  const [isLoadingDrive, setIsLoadingDrive] = useState(false);
-  const [driveSearch, setDriveSearch] = useState("");
-  const [driveFilter, setDriveFilter] = useState<
-    "all" | "pdf" | "docs" | "image"
-  >("all");
-  const [driveError, setDriveError] = useState<string | null>(null);
-  const [importingFileId, setImportingFileId] = useState<string | null>(null);
-
-  // Email sending & remembered email addresses state
-  const [savedEmails, setSavedEmails] = useState<SavedEmailRecipient[]>(() => {
-    try {
-      const raw = localStorage.getItem(EMAIL_RECIPIENTS_STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) return parsed;
       }
     } catch {
@@ -252,3172 +134,2512 @@ export default function App() {
     }
     return [];
   });
-  const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
-  const [emailDocId, setEmailDocId] = useState<string | null>(null);
-  const [selectedRecipients, setSelectedRecipients] = useState<string[]>([]);
-  const [emailInput, setEmailInput] = useState("");
-  const [emailLabelInput, setEmailLabelInput] = useState("");
-  const [emailSubject, setEmailSubject] = useState("");
-  const [emailPersonalNote, setEmailPersonalNote] = useState("");
-  const [attachOriginalFile, setAttachOriginalFile] = useState(true);
-  const [attachAnalysisReport, setAttachAnalysisReport] = useState(true);
-  const [isConfirmingEmailSend, setIsConfirmingEmailSend] = useState(false);
-  const [isSendingEmail, setIsSendingEmail] = useState(false);
-  const [emailError, setEmailError] = useState<string | null>(null);
-  const [emailSuccessMsg, setEmailSuccessMsg] = useState<string | null>(null);
 
-  // File inputs:
-  // 1) All files (PDF, TXT, CSV, Images) from phone/device
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  // 2) Direct phone camera capture input
-  const mobileCameraInputRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    const unsubscribe = initAuth(
-      (user) => {
-        setGoogleUser(user);
-        setNeedsAuth(false);
-      },
-      () => {
-        setGoogleUser(null);
-        setNeedsAuth(true);
-      }
-    );
-    return () => unsubscribe();
-  }, []);
-
-  useEffect(() => {
+  const [usedSongIds, setUsedSongIds] = useState<string[]>(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(documents));
+      const saved = localStorage.getItem(PLAYED_SONGS_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
     } catch {
-      // ignore quota errors
+      // ignore
     }
-  }, [documents]);
+    return [];
+  });
 
+  const [recentDistractorIds, setRecentDistractorIds] = useState<string[]>([]);
+
+  const [selectedCategory, setSelectedCategory] = useState<
+    "all" | SongCategory
+  >("all");
+  const [preferRealAudio, setPreferRealAudio] = useState<boolean>(true);
+
+  // Live iTunes Batch Importer State
+  const [discoverQuery, setDiscoverQuery] = useState<string>("");
+  const [isImportingBatch, setIsImportingBatch] = useState<boolean>(false);
+  const [importStatusMsg, setImportStatusMsg] = useState<string | null>(null);
+
+  // Active Turn & Round State
+  const [currentTeamIndex, setCurrentTeamIndex] = useState<number>(0);
+  const [currentRound, setCurrentRound] = useState<number>(1);
+  const [turnCounter, setTurnCounter] = useState<number>(1);
+  const [currentSong, setCurrentSong] = useState<SongTrack | null>(null);
+  const [currentChoices, setCurrentChoices] = useState<SongTrack[]>([]);
+  const [selectedChoiceId, setSelectedChoiceId] = useState<string | null>(null);
+  const [isAnswerCorrect, setIsAnswerCorrect] = useState<boolean | null>(null);
+  const [lastAwardedPoints, setLastAwardedPoints] = useState<number>(0);
+  const [winnerTeam, setWinnerTeam] = useState<Team | null>(null);
+  const [roundHistory, setRoundHistory] = useState<RoundHistoryItem[]>([]);
+
+  // Per-Turn Extras (Extra 5s purchases & Hint purchases)
+  const [unlockedSeconds, setUnlockedSeconds] = useState<number>(
+    INITIAL_SNIPPET_SECONDS
+  );
+  const [extraSecondsCount, setExtraSecondsCount] = useState<number>(0);
+  const [showHint, setShowHint] = useState<boolean>(false);
+  const [pointsSpentThisTurn, setPointsSpentThisTurn] = useState<number>(0);
+
+  // Time-Decay Guess Timer State
+  const [elapsedGuessTime, setElapsedGuessTime] = useState<number>(0);
+  const guessTimerIntervalRef = useRef<number | null>(null);
+
+  // Audio Playback & Continuation State
+  const [isPlayingSnippet, setIsPlayingSnippet] = useState<boolean>(false);
+  const [isPlayingContinuation, setIsPlayingContinuation] =
+    useState<boolean>(false);
+  const [playbackPositionSec, setPlaybackPositionSec] = useState<number>(0);
+  const [spectrumBars, setSpectrumBars] = useState<number[]>(() =>
+    new Array(24).fill(0.1)
+  );
+  const [audioSourceMode, setAudioSourceMode] = useState<
+    "real_audio" | "studio_synth"
+  >("real_audio");
+  const [currentArtworkUrl, setCurrentArtworkUrl] = useState<
+    string | undefined
+  >(undefined);
+
+  // Independent SoundEngine Volume Controls (Original Song Pre-Amp Boost vs. Accompaniment)
+  const [originalSongVolume, setOriginalSongVolume] = useState<number>(() =>
+    soundEngine.getOriginalSongVolume()
+  );
+  const [accompanimentVolume, setAccompanimentVolume] = useState<number>(() =>
+    soundEngine.getAccompanimentVolume()
+  );
+
+  function handleOriginalSongVolumeChange(newVal: number) {
+    const clamped = Math.max(0.1, Math.min(2.5, newVal));
+    setOriginalSongVolume(clamped);
+    soundEngine.setOriginalSongVolume(clamped);
+  }
+
+  function handleAccompanimentVolumeChange(newVal: number) {
+    const clamped = Math.max(0.0, Math.min(1.5, newVal));
+    setAccompanimentVolume(clamped);
+    soundEngine.setAccompanimentVolume(clamped);
+  }
+
+  // Image fallback state
+  const [heroImgBroken, setHeroImgBroken] = useState<boolean>(false);
+
+  // Custom song form state in Library
+  const [newSongTitle, setNewSongTitle] = useState("");
+  const [newSongArtist, setNewSongArtist] = useState("");
+  const [newSongHint, setNewSongHint] = useState("");
+  const [newSongAudioUrl, setNewSongAudioUrl] = useState<string | undefined>(
+    undefined
+  );
+  const [newSongFileName, setNewSongFileName] = useState<string>("");
+  const [libraryFilterText, setLibraryFilterText] = useState<string>("");
+  const audioFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Persist usedSongIds so songs don't repeat across games
   useEffect(() => {
     try {
       localStorage.setItem(
-        EMAIL_RECIPIENTS_STORAGE_KEY,
-        JSON.stringify(savedEmails)
+        PLAYED_SONGS_STORAGE_KEY,
+        JSON.stringify(usedSongIds)
       );
     } catch {
-      // ignore quota errors
+      // ignore quota error
     }
-  }, [savedEmails]);
+  }, [usedSongIds]);
 
-  // Sort saved emails: those that were USED (useCount > 0) ALWAYS on top (by most recent use, then count),
-  // followed by addresses that were written/saved but not yet sent to.
-  const sortedSavedEmails = useMemo(() => {
-    return [...savedEmails].sort((a, b) => {
-      const aUsed = a.useCount > 0 ? 1 : 0;
-      const bUsed = b.useCount > 0 ? 1 : 0;
-      if (aUsed !== bUsed) return bUsed - aUsed;
-      if (aUsed && bUsed) {
-        if (b.lastUsedAt !== a.lastUsedAt) return b.lastUsedAt - a.lastUsedAt;
-        return b.useCount - a.useCount;
-      }
-      return b.createdAt - a.createdAt;
-    });
-  }, [savedEmails]);
-
-  const activeDoc = useMemo(
-    () => documents.find((d) => d.id === selectedId) || documents[0],
-    [documents, selectedId]
-  );
-
-  const emailTargetDoc = useMemo(
-    () =>
-      (emailDocId && documents.find((d) => d.id === emailDocId)) || activeDoc,
-    [documents, emailDocId, activeDoc]
-  );
-
+  // Persist custom / imported songs
   useEffect(() => {
-    setZoom(1);
-    setRotation(0);
-    setIsEditing(false);
-    setEditDraft(null);
-    setAnalysisError(null);
-  }, [selectedId]);
-
-  // Support Ctrl+V clipboard paste anywhere on page
-  useEffect(() => {
-    const handlePaste = (e: ClipboardEvent) => {
-      const items = e.clipboardData?.items;
-      if (!items) return;
-      for (let i = 0; i < items.length; i++) {
-        if (
-          items[i].type.startsWith("image/") ||
-          items[i].type === "application/pdf"
-        ) {
-          const file = items[i].getAsFile();
-          if (file) {
-            handleFileUpload(file, "local");
-            break;
-          }
-        }
-      }
-    };
-    window.addEventListener("paste", handlePaste);
-    return () => window.removeEventListener("paste", handlePaste);
-  });
-
-  const filteredDocuments = useMemo(() => {
-    return documents.filter((doc) => {
-      const matchesCat =
-        categoryFilter === "all" || doc.data.category === categoryFilter;
-      if (!matchesCat) return false;
-      if (!searchQuery.trim()) return true;
-      const q = searchQuery.toLowerCase();
-      return (
-        doc.title.toLowerCase().includes(q) ||
-        doc.data.vendor.name.toLowerCase().includes(q) ||
-        doc.data.documentNumber.toLowerCase().includes(q) ||
-        doc.data.customer.name.toLowerCase().includes(q) ||
-        doc.data.lineItems.some((item) =>
-          item.description.toLowerCase().includes(q)
-        )
+    try {
+      // Only persist non-blob URLs
+      const serializable = customSongs.filter(
+        (s) => !s.customAudioUrl?.startsWith("blob:")
       );
-    });
-  }, [documents, categoryFilter, searchQuery]);
+      localStorage.setItem(
+        CUSTOM_SONGS_STORAGE_KEY,
+        JSON.stringify(serializable)
+      );
+    } catch {
+      // ignore
+    }
+  }, [customSongs]);
 
-  const financialTotals = useMemo(() => {
-    return filteredDocuments.reduce(
-      (acc, doc) => {
-        acc.subtotal += doc.data.financials.subtotal || 0;
-        acc.vat += doc.data.financials.vatAmount || 0;
-        acc.total += doc.data.financials.totalAmount || 0;
-        return acc;
-      },
-      { subtotal: 0, vat: 0, total: 0 }
+  const allSongs = useMemo(() => {
+    const map = new Map<string, SongTrack>();
+    for (const s of [...customSongs, ...SONGS_DATABASE]) {
+      const key = `${s.title.toLowerCase().trim()}::${s.artist
+        .toLowerCase()
+        .trim()}`;
+      if (!map.has(key)) {
+        map.set(key, s);
+      }
+    }
+    return Array.from(map.values());
+  }, [customSongs]);
+
+  const filteredSongPool = useMemo(() => {
+    if (selectedCategory === "all") return allSongs;
+    const filtered = allSongs.filter((s) => s.category === selectedCategory);
+    return filtered.length >= 4 ? filtered : allSongs;
+  }, [allSongs, selectedCategory]);
+
+  const unplayedInPoolCount = useMemo(() => {
+    return filteredSongPool.filter((s) => !usedSongIds.includes(s.id)).length;
+  }, [filteredSongPool, usedSongIds]);
+
+  const filteredLibrarySongs = useMemo(() => {
+    if (!libraryFilterText.trim()) return allSongs;
+    const q = libraryFilterText.toLowerCase();
+    return allSongs.filter(
+      (s) =>
+        s.title.toLowerCase().includes(q) ||
+        s.artist.toLowerCase().includes(q) ||
+        s.categoryLabel.toLowerCase().includes(q)
     );
-  }, [filteredDocuments]);
+  }, [allSongs, libraryFilterText]);
 
-  async function runGeminiAnalysis(
-    dataUrl: string,
-    mimeType: string,
-    fileNameHint: string,
-    options?: {
-      existingId?: string;
-      textContent?: string;
-      sourceType?: "local" | "drive" | "camera" | "sample";
-    }
-  ) {
-    setIsAnalyzing(true);
-    setAnalysisError(null);
+  // Cleanup audio and timers on unmount, and ensure document title & clean storage on mount
+  useEffect(() => {
+    document.title = "BeatQuiz — משחק זיהוי שירים לקבוצות";
     try {
-      const prepared = await preparePayloadForGemini(
-        dataUrl,
-        mimeType,
-        options?.textContent
-      );
-
-      const response = await fetch("/api/analyze-document", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          imageBase64: prepared.base64,
-          mimeType: prepared.mimeType,
-          textContent: prepared.textContent,
-          fileName: fileNameHint,
-          customFocus: customFocus.trim() || undefined,
-        }),
-      });
-
-      const payload = await response.json();
-      if (!response.ok || payload.error) {
-        throw new Error(payload.error || "שגיאה בפענוח המסמך.");
+      localStorage.removeItem("doculens_il_records_v2");
+      localStorage.removeItem("doculens_il_saved_emails_v1");
+    } catch {
+      // ignore
+    }
+    return () => {
+      soundEngine.stopSongPlayback();
+      if (guessTimerIntervalRef.current !== null) {
+        window.clearInterval(guessTimerIntervalRef.current);
       }
-
-      const extracted: ExtractedDocumentData = payload.result;
-      const newTitle = `${extracted.vendor.name || fileNameHint} — ${
-        extracted.documentType || "מסמך"
-      }${extracted.documentNumber ? ` ${extracted.documentNumber}` : ""}`;
-
-      if (options?.existingId) {
-        setDocuments((prev) =>
-          prev.map((d) =>
-            d.id === options.existingId
-              ? { ...d, title: newTitle, data: extracted }
-              : d
-          )
-        );
-      } else {
-        const newRecord: DocumentRecord = {
-          id: `doc-${Date.now()}`,
-          title: newTitle,
-          createdAt: new Date().toISOString(),
-          imageUrl: dataUrl,
-          mimeType: prepared.mimeType,
-          textContent: options?.textContent,
-          sourceType: options?.sourceType || "local",
-          data: extracted,
-          qaHistory: [],
-        };
-        setDocuments((prev) => [newRecord, ...prev]);
-        setSelectedId(newRecord.id);
-      }
-      setActiveView("workspace");
-    } catch (err: any) {
-      setAnalysisError(
-        err?.message || "אירעה שגיאה בעת פענוח הקובץ. נסה שנית."
-      );
-    } finally {
-      setIsAnalyzing(false);
-    }
-  }
-
-  function handleFileUpload(
-    file: File,
-    sourceType: "local" | "camera" = "local"
-  ) {
-    const cleanName = file.name.replace(/\.[^/.]+$/, "");
-    const isTextLike =
-      file.type.startsWith("text/") ||
-      file.type === "application/json" ||
-      /\.(txt|csv|md|json|html)$/i.test(file.name);
-
-    const isPdf =
-      file.type === "application/pdf" || /\.pdf$/i.test(file.name);
-    const isImage =
-      file.type.startsWith("image/") ||
-      /\.(jpg|jpeg|png|webp|gif|bmp|heic)$/i.test(file.name);
-
-    if (!isImage && !isPdf && !isTextLike) {
-      setAnalysisError(
-        "ניתן להעלות קובצי PDF, תמונות (JPG, PNG, WEBP) או קובצי טקסט ונתונים (TXT, CSV, MD)."
-      );
-      return;
-    }
-
-    if (isTextLike) {
-      const textReader = new FileReader();
-      textReader.onload = () => {
-        const textContent = textReader.result as string;
-        const dataUrl = `data:text/plain;charset=utf-8,${encodeURIComponent(
-          textContent
-        )}`;
-        runGeminiAnalysis(dataUrl, file.type || "text/plain", cleanName, {
-          textContent,
-          sourceType,
-        });
-      };
-      textReader.readAsText(file, "utf-8");
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      const resolvedMime = isPdf
-        ? "application/pdf"
-        : file.type || "image/jpeg";
-      runGeminiAnalysis(dataUrl, resolvedMime, cleanName, { sourceType });
     };
-    reader.readAsDataURL(file);
-  }
+  }, []);
 
-  // Google Drive Modal Handlers
-  async function fetchDriveFilesList(
-    query = driveSearch,
-    filter = driveFilter
-  ) {
-    const token = await getAccessToken();
-    if (!token) {
-      setNeedsAuth(true);
+  // Calculate current potential points for a correct answer right now
+  const currentPotentialPoints = useMemo(() => {
+    let base = pointsPerCorrect;
+    if (isTimeDecayMode && guessTimeLimitSeconds > 0) {
+      const remainingRatio = Math.max(
+        0,
+        (guessTimeLimitSeconds - elapsedGuessTime) / guessTimeLimitSeconds
+      );
+      base = Math.round(pointsPerCorrect * remainingRatio);
+    }
+    return Math.max(0, base - pointsSpentThisTurn);
+  }, [
+    pointsPerCorrect,
+    isTimeDecayMode,
+    guessTimeLimitSeconds,
+    elapsedGuessTime,
+    pointsSpentThisTurn,
+  ]);
+
+  // Manage real-time Time-Decay countdown timer during PLAYING state
+  useEffect(() => {
+    if (guessTimerIntervalRef.current !== null) {
+      window.clearInterval(guessTimerIntervalRef.current);
+      guessTimerIntervalRef.current = null;
+    }
+
+    if (gameState !== "PLAYING" || !isTimeDecayMode) {
       return;
     }
-    setIsLoadingDrive(true);
-    setDriveError(null);
-    try {
-      const files = await listDriveFiles(query, filter);
-      setDriveFiles(files);
-    } catch (err: any) {
-      setDriveError(err?.message || "שגיאה בטעינת קבצים מ-Google Drive.");
-      const currentToken = await getAccessToken();
-      if (!currentToken) setNeedsAuth(true);
-    } finally {
-      setIsLoadingDrive(false);
-    }
-  }
 
-  async function handleGoogleLogin() {
-    setIsLoggingIn(true);
-    setDriveError(null);
-    try {
-      const result = await googleSignIn();
-      if (result) {
-        setGoogleUser(result.user);
-        setNeedsAuth(false);
-        await fetchDriveFilesList(driveSearch, driveFilter);
-      }
-    } catch (err: any) {
-      setDriveError(
-        err?.message || "ההתחברות לחשבון Google נכשלה. נסה שנית."
-      );
-    } finally {
-      setIsLoggingIn(false);
-    }
-  }
-
-  async function handleGoogleLogout() {
-    await logout();
-    setGoogleUser(null);
-    setNeedsAuth(true);
-    setDriveFiles([]);
-  }
-
-  async function openDriveModal() {
-    setIsDriveModalOpen(true);
-    setDriveError(null);
-    const token = await getAccessToken();
-    if (token) {
-      setNeedsAuth(false);
-      await fetchDriveFilesList(driveSearch, driveFilter);
-    } else {
-      setNeedsAuth(true);
-    }
-  }
-
-  async function handleSelectDriveFile(file: DriveFileItem) {
-    setImportingFileId(file.id);
-    setDriveError(null);
-    try {
-      const downloaded = await downloadDriveFileAsDataUrl(file);
-      setIsDriveModalOpen(false);
-      await runGeminiAnalysis(
-        downloaded.dataUrl,
-        downloaded.mimeType,
-        file.name,
-        {
-          textContent: downloaded.textContent,
-          sourceType: "drive",
+    const startTimestamp = performance.now() - elapsedGuessTime * 1000;
+    guessTimerIntervalRef.current = window.setInterval(() => {
+      const nextElapsed = (performance.now() - startTimestamp) / 1000;
+      if (nextElapsed >= guessTimeLimitSeconds) {
+        setElapsedGuessTime(guessTimeLimitSeconds);
+        if (guessTimerIntervalRef.current !== null) {
+          window.clearInterval(guessTimerIntervalRef.current);
+          guessTimerIntervalRef.current = null;
         }
-      );
-    } catch (err: any) {
-      setDriveError(
-        err?.message || "שגיאה בייבוא הקובץ מ-Google Drive."
-      );
-    } finally {
-      setImportingFileId(null);
-    }
-  }
-
-  async function handleAskQuestion(questionText?: string) {
-    const q = (questionText ?? questionInput).trim();
-    if (!q || !activeDoc || isAsking) return;
-
-    setIsAsking(true);
-    setAnalysisError(null);
-    if (!questionText) setQuestionInput("");
-
-    try {
-      const prepared = await preparePayloadForGemini(
-        activeDoc.imageUrl,
-        activeDoc.mimeType,
-        activeDoc.textContent
-      );
-
-      const response = await fetch("/api/ask-document", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          imageBase64: prepared.base64,
-          mimeType: prepared.mimeType,
-          textContent: prepared.textContent,
-          question: q,
-          currentExtraction: activeDoc.data,
-        }),
-      });
-
-      const payload = await response.json();
-      if (!response.ok || payload.error) {
-        throw new Error(payload.error || "שגיאה בביצוע השאילתה.");
+        handleTimeoutFailure();
+      } else {
+        setElapsedGuessTime(nextElapsed);
       }
+    }, 100);
 
-      const timeStr = new Date().toLocaleTimeString("he-IL", {
-        hour: "2-digit",
-        minute: "2-digit",
-      });
+    return () => {
+      if (guessTimerIntervalRef.current !== null) {
+        window.clearInterval(guessTimerIntervalRef.current);
+        guessTimerIntervalRef.current = null;
+      }
+    };
+  }, [gameState, isTimeDecayMode, guessTimeLimitSeconds, turnCounter]);
 
-      setDocuments((prev) =>
-        prev.map((doc) =>
-          doc.id === activeDoc.id
-            ? {
-                ...doc,
-                qaHistory: [
-                  ...(doc.qaHistory || []),
-                  { question: q, answer: payload.answer, timestamp: timeStr },
-                ],
-              }
-            : doc
-        )
-      );
-    } catch (err: any) {
-      setAnalysisError(err?.message || "שגיאה בקבלת תשובה על המסמך.");
-    } finally {
-      setIsAsking(false);
+  function stopGuessTimer() {
+    if (guessTimerIntervalRef.current !== null) {
+      window.clearInterval(guessTimerIntervalRef.current);
+      guessTimerIntervalRef.current = null;
     }
   }
 
-  function startEditing() {
-    if (!activeDoc) return;
-    setEditDraft(JSON.parse(JSON.stringify(activeDoc.data)));
-    setIsEditing(true);
+  // Team Count Management (2 to 6 teams)
+  function setTeamCount(count: number) {
+    const clamped = Math.max(2, Math.min(6, count));
+    setTeams((prev) => {
+      if (clamped === prev.length) return prev;
+      if (clamped < prev.length) {
+        return prev.slice(0, clamped);
+      }
+      const next = [...prev];
+      for (let i = prev.length; i < clamped; i++) {
+        const preset = DEFAULT_TEAM_PRESETS[i] || {
+          name: `קבוצה ${i + 1}`,
+          accentHex: "#F59E0B",
+        };
+        next.push({
+          id: `team-${i + 1}-${Date.now()}`,
+          name: preset.name,
+          score: 0,
+          correctCount: 0,
+          wrongCount: 0,
+          accentHex: preset.accentHex,
+        });
+      }
+      return next;
+    });
   }
 
-  function saveEditing() {
-    if (!activeDoc || !editDraft) return;
-    const updatedTitle = `${editDraft.vendor.name || "מסמך"} — ${
-      editDraft.documentType
-    }${editDraft.documentNumber ? ` ${editDraft.documentNumber}` : ""}`;
-    setDocuments((prev) =>
-      prev.map((doc) =>
-        doc.id === activeDoc.id
-          ? { ...doc, title: updatedTitle, data: editDraft }
-          : doc
+  function updateTeamName(index: number, newName: string) {
+    setTeams((prev) =>
+      prev.map((t, idx) => (idx === index ? { ...t, name: newName } : t))
+    );
+  }
+
+  function pickNextSong(alreadyUsedIds: string[]): {
+    song: SongTrack;
+    updatedUsedIds: string[];
+  } {
+    let available = filteredSongPool.filter(
+      (s) => !alreadyUsedIds.includes(s.id)
+    );
+    let nextUsedIds = [...alreadyUsedIds];
+
+    // Only reset the pool's used IDs if every single song in this category has been played!
+    if (available.length === 0) {
+      const poolIds = new Set(filteredSongPool.map((s) => s.id));
+      nextUsedIds = alreadyUsedIds.filter((id) => !poolIds.has(id));
+      available = [...filteredSongPool];
+    }
+
+    // True random pick from unplayed songs, also preferring a different artist than the current song
+    const diffArtistAvailable = currentSong
+      ? available.filter((s) => s.artist !== currentSong.artist)
+      : available;
+    const candidateList =
+      diffArtistAvailable.length > 0 ? diffArtistAvailable : available;
+
+    const randomIndex = Math.floor(Math.random() * candidateList.length);
+    const chosen = candidateList[randomIndex];
+    nextUsedIds.push(chosen.id);
+
+    // Pre-fetch 3 random unplayed songs in background for instant next turns
+    const remaining = candidateList.filter((s) => s.id !== chosen.id);
+    for (let i = 0; i < Math.min(3, remaining.length); i++) {
+      const rnd = remaining[Math.floor(Math.random() * remaining.length)];
+      soundEngine.prefetchSongPreview(rnd);
+    }
+
+    return { song: chosen, updatedUsedIds: nextUsedIds };
+  }
+
+  function playSongSnippetRange(
+    song: SongTrack,
+    startSec: number,
+    durationSec: number
+  ) {
+    setIsPlayingSnippet(true);
+    setIsPlayingContinuation(false);
+    setPlaybackPositionSec(startSec);
+
+    soundEngine.playSongSegment(song, {
+      startSec,
+      durationSec,
+      preferRealAudio,
+      onSourceResolved: (mode, artwork) => {
+        setAudioSourceMode(mode);
+        if (artwork) setCurrentArtworkUrl(artwork);
+      },
+      onProgress: (currentSec, bars) => {
+        setPlaybackPositionSec(currentSec);
+        setSpectrumBars(bars);
+      },
+      onComplete: () => {
+        setIsPlayingSnippet(false);
+        setPlaybackPositionSec(startSec + durationSec);
+        setSpectrumBars(new Array(24).fill(0.1));
+      },
+    });
+  }
+
+  function playContinuationAfterAnswer(song: SongTrack, startFromSec: number) {
+    setIsPlayingSnippet(false);
+    soundEngine.scheduleContinuationAfterGuess(song, {
+      startFromSec,
+      continuationDurationSec: 18,
+      delayMs: 750,
+      preferRealAudio,
+      onStart: () => {
+        setIsPlayingContinuation(true);
+      },
+      onProgress: (currentSec, bars) => {
+        setPlaybackPositionSec(currentSec);
+        setSpectrumBars(bars);
+      },
+      onComplete: () => {
+        setIsPlayingContinuation(false);
+        setSpectrumBars(new Array(24).fill(0.1));
+      },
+    });
+  }
+
+  function startNewGame() {
+    soundEngine.stopSongPlayback();
+    stopGuessTimer();
+
+    const sanitizedTeams = teams.map((t, idx) => ({
+      ...t,
+      name: t.name.trim() || `קבוצה ${idx + 1}`,
+      score: 0,
+      correctCount: 0,
+      wrongCount: 0,
+    }));
+
+    setTeams(sanitizedTeams);
+    setCurrentTeamIndex(0);
+    setCurrentRound(1);
+    setTurnCounter(1);
+    setWinnerTeam(null);
+    setRoundHistory([]);
+    setSelectedChoiceId(null);
+    setIsAnswerCorrect(null);
+    setLastAwardedPoints(0);
+
+    // Reset per-turn state
+    setUnlockedSeconds(INITIAL_SNIPPET_SECONDS);
+    setExtraSecondsCount(0);
+    setShowHint(false);
+    setPointsSpentThisTurn(0);
+    setElapsedGuessTime(0);
+    setCurrentArtworkUrl(undefined);
+
+    // Keep usedSongIds from previous games so songs NEVER repeat!
+    const { song, updatedUsedIds } = pickNextSong(usedSongIds);
+    const choices = generateFourChoices(
+      song,
+      filteredSongPool,
+      recentDistractorIds
+    );
+    const newDistractors = choices
+      .filter((c) => c.id !== song.id)
+      .map((c) => c.id);
+
+    setUsedSongIds(updatedUsedIds);
+    setRecentDistractorIds((prev) => [...newDistractors, ...prev].slice(0, 18));
+    setCurrentSong(song);
+    setCurrentChoices(choices);
+    setGameState("PLAYING");
+    setActiveTab("arena");
+
+    // Immediately play the first 5 seconds of the original song
+    playSongSnippetRange(song, 0, INITIAL_SNIPPET_SECONDS);
+  }
+
+  function handleBuyExtraFiveSeconds() {
+    if (
+      gameState !== "PLAYING" ||
+      !currentSong ||
+      unlockedSeconds >= MAX_SNIPPET_SECONDS
+    ) {
+      return;
+    }
+
+    const prevUnlocked = unlockedSeconds;
+    const nextUnlocked = Math.min(
+      MAX_SNIPPET_SECONDS,
+      prevUnlocked + EXTRA_TIME_STEP_SECONDS
+    );
+
+    setUnlockedSeconds(nextUnlocked);
+    setExtraSecondsCount((prev) => prev + 1);
+    setPointsSpentThisTurn((prev) => prev + extraTimeCost);
+
+    // Immediately play the newly unlocked 5 seconds of the original song!
+    playSongSnippetRange(currentSong, prevUnlocked, EXTRA_TIME_STEP_SECONDS);
+  }
+
+  function handleBuyHint() {
+    if (gameState !== "PLAYING" || showHint) return;
+    setShowHint(true);
+    setPointsSpentThisTurn((prev) => prev + hintCost);
+  }
+
+  function handleTimeoutFailure() {
+    if (gameState !== "PLAYING" || !currentSong) return;
+
+    soundEngine.stopSongPlayback();
+    setIsPlayingSnippet(false);
+    setSelectedChoiceId("TIMEOUT");
+    setIsAnswerCorrect(false);
+    setLastAwardedPoints(0);
+
+    const activeTeam = teams[currentTeamIndex];
+    setTeams((prev) =>
+      prev.map((team, idx) =>
+        idx === currentTeamIndex
+          ? { ...team, wrongCount: team.wrongCount + 1 }
+          : team
       )
     );
-    setIsEditing(false);
-    setEditDraft(null);
+
+    setRoundHistory((prev) => [
+      {
+        turnId: turnCounter,
+        roundNumber: currentRound,
+        teamName: activeTeam.name,
+        songTitle: currentSong.title,
+        songArtist: currentSong.artist,
+        selectedTitle: "נגמר הזמן לניחוש",
+        isCorrect: false,
+        pointsAwarded: 0,
+      },
+      ...prev,
+    ]);
+
+    soundEngine.playFailureSound();
+    setGameState("ROUND_SUMMARY");
+    playContinuationAfterAnswer(currentSong, unlockedSeconds);
   }
 
-  function deleteDocument(id: string) {
-    if (documents.length <= 1) return;
-    const remaining = documents.filter((d) => d.id !== id);
-    setDocuments(remaining);
-    if (selectedId === id) {
-      setSelectedId(remaining[0].id);
-    }
-  }
+  function handleSelectOption(choice: SongTrack) {
+    if (gameState !== "PLAYING" || !currentSong) return;
 
-  function handleCopyMarkdown() {
-    if (!activeDoc) return;
-    const md = formatDocumentToMarkdown(activeDoc.data, {
-      qaHistory: activeDoc.qaHistory,
+    stopGuessTimer();
+    soundEngine.stopSongPlayback();
+    setIsPlayingSnippet(false);
+
+    const isCorrect = choice.id === currentSong.id;
+    const awarded = isCorrect ? currentPotentialPoints : 0;
+
+    setSelectedChoiceId(choice.id);
+    setIsAnswerCorrect(isCorrect);
+    setLastAwardedPoints(awarded);
+
+    const activeTeam = teams[currentTeamIndex];
+    const updatedTeams = teams.map((team, idx) => {
+      if (idx !== currentTeamIndex) return team;
+      return {
+        ...team,
+        score: team.score + awarded,
+        correctCount: isCorrect ? team.correctCount + 1 : team.correctCount,
+        wrongCount: !isCorrect ? team.wrongCount + 1 : team.wrongCount,
+      };
     });
-    navigator.clipboard.writeText(md);
-    setCopiedReport(true);
-    setTimeout(() => setCopiedReport(false), 2000);
-  }
 
-  function isValidEmailAddress(email: string): boolean {
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
-  }
+    setTeams(updatedTeams);
 
-  function upsertSavedEmails(
-    addresses: string[],
-    options?: { label?: string; markUsed?: boolean }
-  ) {
-    const now = Date.now();
-    const validAddresses = addresses
-      .map((a) => a.trim().toLowerCase())
-      .filter(isValidEmailAddress);
-    if (validAddresses.length === 0) return;
+    setRoundHistory((prev) => [
+      {
+        turnId: turnCounter,
+        roundNumber: currentRound,
+        teamName: activeTeam.name,
+        songTitle: currentSong.title,
+        songArtist: currentSong.artist,
+        selectedTitle: `${choice.title} — ${choice.artist}`,
+        isCorrect,
+        pointsAwarded: awarded,
+      },
+      ...prev,
+    ]);
 
-    setSavedEmails((prev) => {
-      const map = new Map<string, SavedEmailRecipient>();
-      for (const item of prev) {
-        map.set(item.email.toLowerCase(), { ...item });
-      }
-      for (const addr of validAddresses) {
-        const existing = map.get(addr);
-        if (existing) {
-          map.set(addr, {
-            ...existing,
-            label: options?.label?.trim() || existing.label,
-            useCount: options?.markUsed
-              ? (existing.useCount || 0) + 1
-              : existing.useCount || 0,
-            lastUsedAt: options?.markUsed ? now : existing.lastUsedAt || 0,
-          });
-        } else {
-          map.set(addr, {
-            email: addr,
-            label: options?.label?.trim() || undefined,
-            useCount: options?.markUsed ? 1 : 0,
-            lastUsedAt: options?.markUsed ? now : 0,
-            createdAt: now,
-          });
-        }
-      }
-      return Array.from(map.values());
-    });
-  }
-
-  function openEmailModal(targetDoc?: DocumentRecord) {
-    const doc = targetDoc || activeDoc;
-    if (!doc) return;
-    setEmailDocId(doc.id);
-    const defaultSubject = `דוח פענוח מסמך: ${
-      doc.data.vendor.name || doc.title
-    }${doc.data.documentNumber ? ` (#${doc.data.documentNumber})` : ""}`;
-    setEmailSubject(defaultSubject);
-    setEmailPersonalNote("");
-    setEmailInput("");
-    setEmailLabelInput("");
-    setAttachOriginalFile(true);
-    setAttachAnalysisReport(true);
-    setIsConfirmingEmailSend(false);
-    setEmailError(null);
-    setEmailSuccessMsg(null);
-
-    // Pre-select the top most-recently-used address if none selected yet
-    if (sortedSavedEmails.length > 0 && sortedSavedEmails[0].useCount > 0) {
-      setSelectedRecipients([sortedSavedEmails[0].email]);
+    if (isCorrect) {
+      soundEngine.playSuccessSound();
     } else {
-      setSelectedRecipients([]);
+      soundEngine.playFailureSound();
     }
 
-    getAccessToken().then((token) => {
-      setNeedsAuth(!token);
-    });
-    setIsEmailModalOpen(true);
+    setGameState("ROUND_SUMMARY");
+
+    // After success or failure in guessing, automatically play more of the original song!
+    playContinuationAfterAnswer(currentSong, unlockedSeconds);
   }
 
-  function handleAddEmailFromInput() {
-    const parts = emailInput
-      .split(/[,;\s]+/)
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean);
+  function advanceToNextTeamTurn() {
+    soundEngine.stopSongPlayback();
+    stopGuessTimer();
+    setIsPlayingSnippet(false);
+    setIsPlayingContinuation(false);
 
-    if (parts.length === 0) return;
+    const isLastTeamInRound = currentTeamIndex === teams.length - 1;
+    const isFinalRoundCompleted =
+      isLastTeamInRound && currentRound >= totalRounds;
 
-    const invalid = parts.filter((p) => !isValidEmailAddress(p));
-    if (invalid.length > 0) {
-      setEmailError(`כתובת המייל אינה תקינה: ${invalid.join(", ")}`);
+    if (isFinalRoundCompleted) {
+      const sorted = [...teams].sort((a, b) => b.score - a.score);
+      setWinnerTeam(sorted[0]);
+      setGameState("GAME_OVER");
+      soundEngine.playVictorySound();
       return;
     }
 
-    setEmailError(null);
-    // Remember immediately in savedEmails so any address the user writes is saved for next time
-    upsertSavedEmails(parts, {
-      label: parts.length === 1 ? emailLabelInput : undefined,
-      markUsed: false,
-    });
+    const nextTeamIdx = (currentTeamIndex + 1) % teams.length;
+    const nextRound = isLastTeamInRound ? currentRound + 1 : currentRound;
 
-    setSelectedRecipients((prev) => {
-      const next = new Set(prev);
-      parts.forEach((p) => next.add(p));
-      return Array.from(next);
-    });
-    setEmailInput("");
-    setEmailLabelInput("");
-  }
-
-  function toggleRecipientEmail(email: string) {
-    const normalized = email.trim().toLowerCase();
-    setSelectedRecipients((prev) =>
-      prev.includes(normalized)
-        ? prev.filter((e) => e !== normalized)
-        : [...prev, normalized]
+    const { song, updatedUsedIds } = pickNextSong(usedSongIds);
+    const choices = generateFourChoices(
+      song,
+      filteredSongPool,
+      recentDistractorIds
     );
-    setIsConfirmingEmailSend(false);
+    const newDistractors = choices
+      .filter((c) => c.id !== song.id)
+      .map((c) => c.id);
+
+    setCurrentTeamIndex(nextTeamIdx);
+    setCurrentRound(nextRound);
+    setTurnCounter((prev) => prev + 1);
+    setUsedSongIds(updatedUsedIds);
+    setRecentDistractorIds((prev) => [...newDistractors, ...prev].slice(0, 18));
+    setCurrentSong(song);
+    setCurrentChoices(choices);
+    setSelectedChoiceId(null);
+    setIsAnswerCorrect(null);
+    setLastAwardedPoints(0);
+
+    // Reset per-turn state
+    setUnlockedSeconds(INITIAL_SNIPPET_SECONDS);
+    setExtraSecondsCount(0);
+    setShowHint(false);
+    setPointsSpentThisTurn(0);
+    setElapsedGuessTime(0);
+    setCurrentArtworkUrl(undefined);
+
+    setGameState("PLAYING");
+    playSongSnippetRange(song, 0, INITIAL_SNIPPET_SECONDS);
   }
 
-  function removeSavedEmailAddress(email: string) {
-    const normalized = email.trim().toLowerCase();
-    setSavedEmails((prev) =>
-      prev.filter((item) => item.email.toLowerCase() !== normalized)
-    );
-    setSelectedRecipients((prev) => prev.filter((e) => e !== normalized));
-  }
+  async function handleImportSongsFromItunes(termToSearch?: string) {
+    const q = (termToSearch ?? discoverQuery).trim();
+    if (!q || isImportingBatch) return;
 
-  function resolveFinalRecipients(): string[] | null {
-    const pendingParts = emailInput
-      .split(/[,;\s]+/)
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean);
-
-    if (pendingParts.length > 0) {
-      const invalid = pendingParts.filter((p) => !isValidEmailAddress(p));
-      if (invalid.length > 0) {
-        setEmailError(`כתובת המייל אינה תקינה: ${invalid.join(", ")}`);
-        return null;
-      }
-      upsertSavedEmails(pendingParts, {
-        label: pendingParts.length === 1 ? emailLabelInput : undefined,
-        markUsed: false,
-      });
-    }
-
-    const combined = Array.from(
-      new Set([...selectedRecipients, ...pendingParts])
-    );
-    if (combined.length === 0) {
-      setEmailError("נא לבחור או להקליד לפחות כתובת מייל אחת למשלוח.");
-      return null;
-    }
-
-    setSelectedRecipients(combined);
-    if (pendingParts.length > 0) {
-      setEmailInput("");
-      setEmailLabelInput("");
-    }
-    return combined;
-  }
-
-  async function buildDocumentAttachments(
-    doc: DocumentRecord
-  ): Promise<EmailAttachmentPayload[]> {
-    const attachments: EmailAttachmentPayload[] = [];
-    const safeBaseName = (doc.data.vendor.name || doc.title || "document")
-      .replace(/[\\/:*?"<>|]/g, "-")
-      .slice(0, 60);
-
-    if (attachOriginalFile) {
-      if (doc.textContent) {
-        const ext = doc.mimeType === "text/csv" ? "csv" : "txt";
-        attachments.push({
-          fileName: `${safeBaseName}-מקור.${ext}`,
-          mimeType: doc.mimeType || "text/plain",
-          base64Data: utf8ToBase64(doc.textContent),
-        });
-      } else {
-        const prepared = await preparePayloadForGemini(
-          doc.imageUrl,
-          doc.mimeType,
-          doc.textContent
-        );
-        if (prepared.base64) {
-          const ext =
-            prepared.mimeType === "application/pdf"
-              ? "pdf"
-              : prepared.mimeType === "image/png"
-              ? "png"
-              : prepared.mimeType === "image/webp"
-              ? "webp"
-              : "jpg";
-          attachments.push({
-            fileName: `${safeBaseName}-מקור.${ext}`,
-            mimeType: prepared.mimeType,
-            base64Data: prepared.base64,
-          });
-        }
-      }
-    }
-
-    if (attachAnalysisReport) {
-      const mdReport = formatDocumentToMarkdown(doc.data, {
-        personalNote: emailPersonalNote,
-        qaHistory: doc.qaHistory,
-      });
-      attachments.push({
-        fileName: `${safeBaseName}-דוח-ניתוח.md`,
-        mimeType: "text/markdown",
-        base64Data: utf8ToBase64(mdReport),
-      });
-    }
-
-    return attachments;
-  }
-
-  function handleRequestEmailConfirmation() {
-    setEmailError(null);
-    setEmailSuccessMsg(null);
-    const recipients = resolveFinalRecipients();
-    if (!recipients) return;
-    if (!emailSubject.trim()) {
-      setEmailError("נא להזין נושא להודעת המייל.");
-      return;
-    }
-    setIsConfirmingEmailSend(true);
-  }
-
-  async function handleConfirmAndSendEmail() {
-    if (!emailTargetDoc) return;
-    const recipients = resolveFinalRecipients();
-    if (!recipients) return;
-
-    setIsSendingEmail(true);
-    setEmailError(null);
-    setEmailSuccessMsg(null);
-
+    setIsImportingBatch(true);
+    setImportStatusMsg(null);
     try {
-      const attachments = await buildDocumentAttachments(emailTargetDoc);
-      const attachedNames = attachments.map((a) => a.fileName);
-
-      const plainTextBody = formatDocumentToMarkdown(emailTargetDoc.data, {
-        personalNote: emailPersonalNote,
-        qaHistory: emailTargetDoc.qaHistory,
-      });
-      const htmlBody = formatDocumentToEmailHtml(emailTargetDoc.data, {
-        title: emailTargetDoc.title,
-        personalNote: emailPersonalNote,
-        qaHistory: emailTargetDoc.qaHistory,
-        attachedFileNames: attachedNames,
-      });
-
-      await sendEmailViaGmail({
-        to: recipients,
-        subject: emailSubject.trim(),
-        plainTextBody,
-        htmlBody,
-        attachments,
-      });
-
-      // Mark these addresses as USED so they appear at the top next time!
-      upsertSavedEmails(recipients, { markUsed: true });
-
-      setIsConfirmingEmailSend(false);
-      setEmailSuccessMsg(
-        `המייל נשלח בהצלחה אל ${recipients.join(", ")}${
-          attachedNames.length > 0
-            ? ` יחד עם ${attachedNames.length} קבצים מצורפים`
-            : ""
-        }!`
+      const res = await fetch(
+        `/api/itunes-discover?term=${encodeURIComponent(q)}&limit=20`
       );
-    } catch (err: any) {
-      setEmailError(err?.message || "שגיאה בשליחת המייל. נסה שנית.");
-      const token = await getAccessToken();
-      if (!token) setNeedsAuth(true);
-      setIsConfirmingEmailSend(false);
-    } finally {
-      setIsSendingEmail(false);
-    }
-  }
+      if (!res.ok) {
+        throw new Error("שגיאה בחיפוש שירים");
+      }
+      const data = await res.json();
+      const tracks: any[] = Array.isArray(data?.tracks) ? data.tracks : [];
+      if (tracks.length === 0) {
+        setImportStatusMsg(`לא נמצאו שירים עבור "${q}". נסה שם אמן אחר.`);
+        return;
+      }
 
-  function handleSendViaMailtoClient() {
-    if (!emailTargetDoc) return;
-    const recipients = resolveFinalRecipients();
-    if (!recipients) return;
+      const template = SONGS_DATABASE[0];
+      const imported: SongTrack[] = tracks.map((t) => {
+        const hasHebrew =
+          /[\u0590-\u05FF]/.test(String(t.title)) ||
+          /[\u0590-\u05FF]/.test(String(t.artist));
+        const assignedCategory: SongCategory = !hasHebrew
+          ? "international"
+          : selectedCategory === "all" || selectedCategory === "international"
+          ? "israeli_hits"
+          : selectedCategory;
 
-    // Remember and mark as used so it appears on top next time
-    upsertSavedEmails(recipients, { markUsed: true });
-
-    const bodyText = formatDocumentToMarkdown(emailTargetDoc.data, {
-      personalNote: emailPersonalNote,
-      qaHistory: emailTargetDoc.qaHistory,
-    });
-    const mailtoUrl = `mailto:${encodeURIComponent(
-      recipients.join(",")
-    )}?subject=${encodeURIComponent(
-      emailSubject.trim()
-    )}&body=${encodeURIComponent(bodyText)}`;
-    window.location.href = mailtoUrl;
-    setEmailSuccessMsg(
-      "נפתחה תוכנת המייל במכשיר והכתובות נשמרו לראש הרשימה לפעמים הבאות."
-    );
-  }
-
-  function exportAllToCsv() {
-    const headers = [
-      "סוג מסמך",
-      "מספר מסמך",
-      "תאריך",
-      "שם הספק",
-      "עוסק מורשה / ח.פ",
-      "טלפון ספק",
-      "כתובת ספק",
-      "שם לקוח",
-      "פירוט פריטים",
-      'לפני מע"מ',
-      'מע"מ',
-      'סה"כ לתשלום',
-      "מטבע",
-      "אמצעי תשלום",
-    ];
-
-    const rows = documents.map((d) => {
-      const x = d.data;
-      const itemsSummary = x.lineItems
-        .map((i) => `${i.description} (${i.quantity})`)
-        .join(" ; ");
-      return [
-        x.documentType,
-        x.documentNumber,
-        x.date,
-        x.vendor.name,
-        x.vendor.taxId,
-        [x.vendor.phone, x.vendor.mobile].filter(Boolean).join(" / "),
-        x.vendor.address,
-        x.customer.name,
-        itemsSummary,
-        x.financials.subtotal.toFixed(2),
-        x.financials.vatAmount.toFixed(2),
-        x.financials.totalAmount.toFixed(2),
-        x.financials.currency,
-        x.financials.paymentMethod,
-      ].map((cell) => `"${String(cell || "").replace(/"/g, '""')}"`);
-    });
-
-    const csvContent =
-      "\uFEFF" +
-      [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `פענוח-מסמכים-${new Date().toISOString().slice(0, 10)}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
-  }
-
-  async function openCamera() {
-    setAnalysisError(null);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment" },
+        return {
+          id: `itunes-${t.trackId}`,
+          title: t.title,
+          artist: t.artist,
+          year: t.year || 2024,
+          category: assignedCategory,
+          categoryLabel: CATEGORY_LABELS[assignedCategory],
+          hint: `שיר של ${t.artist} (יצא בשנת ${t.year || 2024})`,
+          itunesQuery: `${t.title} ${t.artist}`,
+          customAudioUrl: t.previewUrl,
+          bpm: 120,
+          instrument: "synth_lead",
+          melody: template.melody,
+          bass: template.bass,
+        };
       });
-      streamRef.current = stream;
-      setIsCameraOpen(true);
-      setTimeout(() => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-        }
-      }, 100);
+
+      setCustomSongs((prev) => {
+        const existingIds = new Set(prev.map((s) => s.id));
+        const fresh = imported.filter((s) => !existingIds.has(s.id));
+        return [...fresh, ...prev];
+      });
+      setImportStatusMsg(
+        `נוספו בהצלחה ${imported.length} שירים מקוריים של "${q}" למאגר המשחק!`
+      );
+      if (!termToSearch) setDiscoverQuery("");
     } catch {
-      // Fallback to native phone camera input if WebRTC stream is blocked
-      mobileCameraInputRef.current?.click();
+      setImportStatusMsg("אירעה שגיאה בטעינת השירים מהקטלוג.");
+    } finally {
+      setIsImportingBatch(false);
     }
   }
 
-  function closeCamera() {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
+  function handleCustomAudioUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const objectUrl = URL.createObjectURL(file);
+    setNewSongAudioUrl(objectUrl);
+    setNewSongFileName(file.name);
+    if (!newSongTitle.trim()) {
+      const cleanName = file.name.replace(/\.[^/.]+$/, "");
+      setNewSongTitle(cleanName);
     }
-    setIsCameraOpen(false);
   }
 
-  function captureCameraPhoto() {
-    if (!videoRef.current) return;
-    const video = videoRef.current;
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth || 1280;
-    canvas.height = video.videoHeight || 720;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
-    closeCamera();
-    runGeminiAnalysis(dataUrl, "image/jpeg", "צילום מצלמה", {
-      sourceType: "camera",
-    });
+  function handleAddCustomSong(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newSongTitle.trim() || !newSongArtist.trim()) return;
+
+    const template = SONGS_DATABASE[0];
+    const customTrack: SongTrack = {
+      id: `custom-${Date.now()}`,
+      title: newSongTitle.trim(),
+      artist: newSongArtist.trim(),
+      year: new Date().getFullYear(),
+      category: "israeli_hits",
+      categoryLabel: "שיר מותאם אישית",
+      hint: newSongHint.trim() || "שיר שנוסף על ידי מנחה המשחק",
+      itunesQuery: `${newSongTitle.trim()} ${newSongArtist.trim()}`,
+      customAudioUrl: newSongAudioUrl,
+      bpm: 124,
+      instrument: "synth_lead",
+      melody: template.melody,
+      bass: template.bass,
+    };
+
+    setCustomSongs((prev) => [customTrack, ...prev]);
+    setNewSongTitle("");
+    setNewSongArtist("");
+    setNewSongHint("");
+    setNewSongAudioUrl(undefined);
+    setNewSongFileName("");
   }
 
-  const currentData = isEditing && editDraft ? editDraft : activeDoc?.data;
+  const activeTeam = teams[currentTeamIndex] || teams[0];
+  const nextTeam = teams[(currentTeamIndex + 1) % teams.length] || teams[0];
+  const isLastTurnOfGame =
+    currentTeamIndex === teams.length - 1 && currentRound >= totalRounds;
 
-  const isActiveDocPdf = activeDoc?.mimeType === "application/pdf";
-  const isActiveDocText =
-    Boolean(activeDoc?.textContent) ||
-    activeDoc?.mimeType.startsWith("text/") ||
-    activeDoc?.mimeType === "application/json";
+  const optionLetters = ["א", "ב", "ג", "ד"];
 
   return (
     <div
       dir="rtl"
-      className="min-h-screen flex flex-col bg-[#F8FAFC] text-[#0F172A]"
+      className="min-h-screen flex flex-col bg-[#0B1120] text-[#F8FAFC] selection:bg-amber-500 selection:text-slate-950"
     >
-      {/* Hidden File Input: Supports PDF, Text/CSV, and Images from Phone/Desktop */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="application/pdf,image/*,text/plain,text/csv,text/markdown,application/json,.pdf,.txt,.csv,.md,.json"
-        className="hidden"
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) handleFileUpload(file, "local");
-          e.target.value = "";
-        }}
-      />
-
-      {/* Hidden Native Phone Camera Input */}
-      <input
-        ref={mobileCameraInputRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        className="hidden"
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) handleFileUpload(file, "camera");
-          e.target.value = "";
-        }}
-      />
-
-      {/* Top Bar Contract: 3 Zones separated by gap-8 */}
-      <header className="flex items-center justify-between gap-8 px-6 py-4 bg-white border-b border-slate-200 sticky top-0 z-30">
+      {/* Top Bar Contract: Strictly 1 row, 3 zones separated by gap-8 */}
+      <header className="flex items-center justify-between gap-8 px-6 py-4 bg-[#0F172A] border-b border-slate-800 sticky top-0 z-30">
         {/* Zone 1: Single text element wordmark */}
         <a
-          href="#top"
+          href="#arena"
           onClick={(e) => {
             e.preventDefault();
-            setActiveView("workspace");
+            setActiveTab("arena");
           }}
-          className="text-lg font-bold tracking-tight text-slate-900 font-display whitespace-nowrap shrink-0"
+          className="text-lg font-bold tracking-tight text-white font-display whitespace-nowrap shrink-0"
         >
-          DocuLens IL
+          BeatQuiz · זהה את השיר המקורי
         </a>
 
-        {/* Zone 2: 5 clean single-line navigation links */}
-        <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-600">
+        {/* Zone 2: 4 concise single-line navigation links */}
+        <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-300">
           <button
-            onClick={() => setActiveView("workspace")}
-            className={`hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 pb-0.5 cursor-pointer ${
-              activeView === "workspace"
-                ? "text-slate-900 border-b-2 border-slate-900 font-semibold"
+            type="button"
+            onClick={() => setActiveTab("arena")}
+            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 pb-0.5 cursor-pointer ${
+              activeTab === "arena"
+                ? "text-amber-400 border-b-2 border-amber-400 font-semibold"
                 : ""
             }`}
           >
-            סביבת פענוח
+            זירת המשחק
           </button>
           <button
-            onClick={openDriveModal}
-            className="hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            Google Drive
-          </button>
-          <button
-            onClick={() => setActiveView("markdown")}
-            className={`hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 pb-0.5 cursor-pointer ${
-              activeView === "markdown"
-                ? "text-slate-900 border-b-2 border-slate-900 font-semibold"
+            type="button"
+            onClick={() => {
+              soundEngine.stopSongPlayback();
+              stopGuessTimer();
+              setIsPlayingSnippet(false);
+              setIsPlayingContinuation(false);
+              setActiveTab("setup");
+            }}
+            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 pb-0.5 cursor-pointer ${
+              activeTab === "setup"
+                ? "text-amber-400 border-b-2 border-amber-400 font-semibold"
                 : ""
             }`}
           >
-            דוח מובנה להעתקה
+            הגדרות וניקוד
           </button>
           <button
-            onClick={() => setActiveView("ledger")}
-            className={`hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 pb-0.5 cursor-pointer ${
-              activeView === "ledger"
-                ? "text-slate-900 border-b-2 border-slate-900 font-semibold"
+            type="button"
+            onClick={() => {
+              soundEngine.stopSongPlayback();
+              stopGuessTimer();
+              setIsPlayingSnippet(false);
+              setIsPlayingContinuation(false);
+              setActiveTab("library");
+            }}
+            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 pb-0.5 cursor-pointer ${
+              activeTab === "library"
+                ? "text-amber-400 border-b-2 border-amber-400 font-semibold"
                 : ""
             }`}
           >
-            יומן מסמכים ({documents.length})
+            מאגר שירים ({allSongs.length})
           </button>
           <button
-            onClick={exportAllToCsv}
-            className="hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            type="button"
+            onClick={() => setActiveTab("rules")}
+            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 pb-0.5 cursor-pointer ${
+              activeTab === "rules"
+                ? "text-amber-400 border-b-2 border-amber-400 font-semibold"
+                : ""
+            }`}
           >
-            ייצוא לאקסל
+            חוקים ובדיקת סאונד
           </button>
         </nav>
 
         {/* Zone 3: 1 primary action */}
         <div className="flex items-center gap-3 shrink-0">
           <button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isAnalyzing}
-            className="px-4 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+            type="button"
+            onClick={() => {
+              soundEngine.stopSongPlayback();
+              stopGuessTimer();
+              setIsPlayingSnippet(false);
+              setIsPlayingContinuation(false);
+              setGameState("TITLE_MENU");
+              setActiveTab("arena");
+            }}
+            className="px-4 py-2 text-xs font-semibold text-slate-950 bg-amber-400 rounded-lg hover:bg-amber-300 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
-            {isAnalyzing ? "מפענח קובץ..." : "העלאת קובץ / מסמך"}
+            הגדרת משחק חדש
           </button>
         </div>
       </header>
 
-      {/* Main Workspace Container */}
-      <div className="flex-1 flex flex-col lg:flex-row max-w-[1440px] w-full mx-auto">
-        {/* Right Sidebar (RTL): Document Queue & Multi-Source Upload */}
-        <aside className="w-full lg:w-[340px] shrink-0 bg-white border-b lg:border-b-0 lg:border-l border-slate-200 flex flex-col">
-          {/* Upload Dropzone & Multi-Source Triggers */}
-          <div className="p-4 border-b border-slate-200 space-y-3">
-            <div
-              onDragOver={(e) => {
-                e.preventDefault();
-                setIsDraggingOver(true);
-              }}
-              onDragLeave={() => setIsDraggingOver(false)}
-              onDrop={(e) => {
-                e.preventDefault();
-                setIsDraggingOver(false);
-                const file = e.dataTransfer.files?.[0];
-                if (file) handleFileUpload(file, "local");
-              }}
-              onClick={() => fileInputRef.current?.click()}
-              className={`border border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors ${
-                isDraggingOver
-                  ? "border-blue-600 bg-blue-50/60"
-                  : "border-slate-300 hover:border-slate-400 bg-slate-50/60"
-              }`}
-            >
-              <Upload className="w-5 h-5 text-slate-600 mx-auto mb-1.5" />
-              <p className="text-sm font-semibold text-slate-900">
-                העלאת קובץ מהטלפון או מהמחשב
-              </p>
-              <p className="text-xs text-slate-500 mt-1">
-                PDF · קובצי טקסט ו-CSV · תמונות קבלות ומסמכים
-              </p>
-            </div>
-
-            {/* Dedicated Source Buttons: Google Drive, Phone Files, Camera */}
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={openDriveModal}
-                disabled={isAnalyzing}
-                className="flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-              >
-                <FolderOpen className="w-3.5 h-3.5 text-blue-600 shrink-0" />
-                <span>ייבוא מ-Google Drive</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isAnalyzing}
-                className="flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-              >
-                <Smartphone className="w-3.5 h-3.5 text-slate-700 shrink-0" />
-                <span>קבצים מהטלפון</span>
-              </button>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={openCamera}
-                disabled={isAnalyzing}
-                className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <Camera className="w-3.5 h-3.5 shrink-0" />
-                <span>צילום מסמך</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  if (activeDoc) {
-                    runGeminiAnalysis(
-                      activeDoc.imageUrl,
-                      activeDoc.mimeType,
-                      activeDoc.title,
-                      {
-                        existingId: activeDoc.id,
-                        textContent: activeDoc.textContent,
-                        sourceType: activeDoc.sourceType,
-                      }
-                    );
-                  }
-                }}
-                disabled={isAnalyzing || !activeDoc}
-                className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-              >
-                <RefreshCw
-                  className={`w-3.5 h-3.5 shrink-0 ${
-                    isAnalyzing ? "animate-spin" : ""
-                  }`}
-                />
-                <span>פענח מחדש (AI)</span>
-              </button>
-            </div>
-
-            <input
-              type="text"
-              value={customFocus}
-              onChange={(e) => setCustomFocus(e.target.value)}
-              placeholder="דגש מיוחד לפענוח (למשל: בדוק סעיפי חוזה / מע״מ)..."
-              className="w-full px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-md text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-blue-600"
-            />
-          </div>
-
-          {/* Search & Interactive Segmented Filter */}
-          <div className="p-4 border-b border-slate-200 space-y-3">
-            <div className="relative">
-              <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="חיפוש לפי ספק, מספר מסמך או פריט..."
-                className="w-full pr-9 pl-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-md text-slate-900 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-blue-600"
-              />
-            </div>
-
-            <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
-              <button
-                onClick={() => setCategoryFilter("all")}
-                className={`flex-1 px-2 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  categoryFilter === "all"
-                    ? "bg-white text-slate-900 shadow-xs"
-                    : "text-slate-600 hover:text-slate-900"
-                }`}
-              >
-                הכל
-              </button>
-              <button
-                onClick={() => setCategoryFilter("invoice")}
-                className={`flex-1 px-2 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  categoryFilter === "invoice"
-                    ? "bg-white text-slate-900 shadow-xs"
-                    : "text-slate-600 hover:text-slate-900"
-                }`}
-              >
-                חשבוניות
-              </button>
-              <button
-                onClick={() => setCategoryFilter("note")}
-                className={`flex-1 px-2 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  categoryFilter === "note"
-                    ? "bg-white text-slate-900 shadow-xs"
-                    : "text-slate-600 hover:text-slate-900"
-                }`}
-              >
-                מסמכים ופתקים
-              </button>
-            </div>
-          </div>
-
-          {/* Document List */}
-          <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
-            {filteredDocuments.length === 0 ? (
-              <div className="p-8 text-center">
-                <p className="text-sm text-slate-500">
-                  לא נמצאו מסמכים התואמים לחיפוש.
+      {/* Main Content Container */}
+      <main className="flex-1 w-full max-w-[1360px] mx-auto px-4 sm:px-6 py-6 sm:py-8">
+        {/* TAB: LIBRARY (107+ Built-in Songs + One-Click iTunes Importer + Custom Upload) */}
+        {activeTab === "library" && (
+          <div className="space-y-8">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-5">
+              <div>
+                <h1 className="text-2xl sm:text-3xl font-bold font-display text-white">
+                  מאגר השירים המקוריים ({allSongs.length} שירים במאגר)
+                </h1>
+                <p className="text-sm text-slate-400 mt-1">
+                  שירים שכבר הושמעו במשחקים קודמים מסומנים ולא יחזרו על עצמם עד שכל המאגר יושמע · ניתן לייבא עשרות שירים נוספים בלחיצה
                 </p>
               </div>
-            ) : (
-              filteredDocuments.map((doc) => {
-                const isSelected = doc.id === activeDoc?.id;
-                const formatLabel =
-                  doc.mimeType === "application/pdf"
-                    ? "PDF"
-                    : doc.textContent || doc.mimeType.startsWith("text/")
-                    ? "טקסט / נתונים"
-                    : doc.sourceType === "drive"
-                    ? "Drive"
-                    : "";
-
-                return (
-                  <div
-                    key={doc.id}
-                    onClick={() => {
-                      setSelectedId(doc.id);
-                    }}
-                    className={`p-4 cursor-pointer transition-colors ${
-                      isSelected
-                        ? "bg-slate-100/90"
-                        : "hover:bg-slate-50 bg-white"
-                    }`}
+              <div className="flex items-center gap-3 self-start">
+                {usedSongIds.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setUsedSongIds([])}
+                    className="px-3.5 py-2 text-xs font-semibold text-slate-300 bg-[#1E293B] border border-slate-700 rounded-lg hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      <h3 className="text-sm font-semibold text-slate-900 leading-snug">
-                        {doc.data.vendor.name || doc.title}
-                      </h3>
-                      <span className="text-sm font-semibold text-slate-900 font-mono-tabular tabular-nums whitespace-nowrap shrink-0">
-                        {doc.data.financials.totalAmount > 0
-                          ? `${doc.data.financials.totalAmount.toFixed(2)} ₪`
-                          : "—"}
-                      </span>
-                    </div>
-
-                    {/* Clean Unboxed Metadata with · separators */}
-                    <div className="flex flex-wrap items-center gap-1.5 mt-1.5 text-xs text-slate-500">
-                      <span>{doc.data.documentType}</span>
-                      {formatLabel && (
-                        <>
-                          <span aria-hidden="true">·</span>
-                          <span>{formatLabel}</span>
-                        </>
-                      )}
-                      {doc.data.documentNumber && (
-                        <>
-                          <span aria-hidden="true">·</span>
-                          <span className="font-mono-tabular tabular-nums">
-                            #{doc.data.documentNumber}
-                          </span>
-                        </>
-                      )}
-                      {doc.data.date && (
-                        <>
-                          <span aria-hidden="true">·</span>
-                          <span className="font-mono-tabular tabular-nums">
-                            {doc.data.date.split(" ")[0]}
-                          </span>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-
-          {/* Cumulative Summary Footer in Sidebar */}
-          <div className="p-4 bg-slate-50 border-t border-slate-200 text-xs text-slate-600 space-y-1">
-            <div className="flex items-center justify-between">
-              <span>סה"כ לפני מע"מ ({filteredDocuments.length} מסמכים):</span>
-              <span className="font-mono-tabular tabular-nums font-medium text-slate-900">
-                {financialTotals.subtotal.toFixed(2)} ש"ח
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span>סה"כ מע"מ מצטבר:</span>
-              <span className="font-mono-tabular tabular-nums font-medium text-slate-900">
-                {financialTotals.vat.toFixed(2)} ש"ח
-              </span>
-            </div>
-            <div className="flex items-center justify-between pt-1 border-t border-slate-200 font-semibold text-slate-900 text-sm">
-              <span>סה"כ כולל מע"מ:</span>
-              <span className="font-mono-tabular tabular-nums">
-                {financialTotals.total.toFixed(2)} ש"ח
-              </span>
-            </div>
-          </div>
-        </aside>
-
-        {/* Main Content Area */}
-        <main className="flex-1 p-6 lg:p-8 overflow-y-auto">
-          {/* Error Banner if any */}
-          {analysisError && (
-            <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg flex items-center justify-between gap-4 text-sm text-red-800">
-              <div className="flex items-center gap-2.5">
-                <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
-                <span>{analysisError}</span>
+                    איפוס שירים שהושמעו ({usedSongIds.length})
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("arena")}
+                  className="px-4 py-2 text-sm font-semibold bg-amber-400 text-slate-950 rounded-lg hover:bg-amber-300 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  חזרה לזירת המשחק
+                </button>
               </div>
-              <button
-                onClick={() => setAnalysisError(null)}
-                className="text-xs font-medium underline hover:text-red-950 whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                סגור הודעה
-              </button>
             </div>
-          )}
 
-          {/* Loading Skeleton Overlay during AI analysis */}
-          {isAnalyzing && (
-            <div className="mb-6 p-5 bg-blue-50/70 border border-blue-200 rounded-lg flex items-center justify-between">
-              <div className="space-y-1">
-                <p className="text-sm font-semibold text-blue-950">
-                  מפענח את הקובץ ומחלץ שדות בעברית...
-                </p>
-                <p className="text-xs text-blue-700">
-                  מנתח קובץ (PDF / מסמך / תמונה), מזהה פרטי ספק, פריטים, מע"מ
-                  ונקודות עיקריות
-                </p>
-              </div>
-              <RefreshCw className="w-5 h-5 text-blue-700 animate-spin shrink-0" />
-            </div>
-          )}
-
-          {/* Mobile View Switcher */}
-          <div className="flex md:hidden items-center gap-1 p-1 mb-6 bg-slate-200/70 rounded-lg">
-            <button
-              onClick={() => setActiveView("workspace")}
-              className={`flex-1 py-1.5 text-xs font-medium rounded-md whitespace-nowrap shrink-0 ${
-                activeView === "workspace"
-                  ? "bg-white text-slate-900 shadow-xs"
-                  : "text-slate-600"
-              }`}
-            >
-              סביבת פענוח
-            </button>
-            <button
-              onClick={openDriveModal}
-              className="flex-1 py-1.5 text-xs font-medium rounded-md whitespace-nowrap shrink-0 text-slate-600"
-            >
-              Drive
-            </button>
-            <button
-              onClick={() => setActiveView("markdown")}
-              className={`flex-1 py-1.5 text-xs font-medium rounded-md whitespace-nowrap shrink-0 ${
-                activeView === "markdown"
-                  ? "bg-white text-slate-900 shadow-xs"
-                  : "text-slate-600"
-              }`}
-            >
-              דוח מובנה
-            </button>
-            <button
-              onClick={() => setActiveView("ledger")}
-              className={`flex-1 py-1.5 text-xs font-medium rounded-md whitespace-nowrap shrink-0 ${
-                activeView === "ledger"
-                  ? "bg-white text-slate-900 shadow-xs"
-                  : "text-slate-600"
-              }`}
-            >
-              יומן
-            </button>
-          </div>
-
-          {activeView === "workspace" && activeDoc && currentData && (
-            <div className="space-y-8">
-              {/* Top Document Header Bar */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-slate-200">
+            {/* Live iTunes Batch Song Importer */}
+            <div className="bg-[#1E293B] border border-slate-800 rounded-xl p-6 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div>
-                  {/* Quiet Unboxed Kicker Metadata */}
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 mb-1.5">
-                    <span className="font-medium text-slate-700">
-                      {currentData.documentType}
-                    </span>
-                    {currentData.documentNumber && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span className="font-mono-tabular tabular-nums">
-                          מספר {currentData.documentNumber}
-                        </span>
-                      </>
-                    )}
-                    <span aria-hidden="true">·</span>
-                    <span className="font-mono-tabular tabular-nums">
-                      תאריך: {currentData.date || "לא צוין"}
-                    </span>
-                    {currentData.vendor.taxId && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span className="font-mono-tabular tabular-nums">
-                          ע"מ / ח.פ: {currentData.vendor.taxId}
-                        </span>
-                      </>
-                    )}
-                  </div>
-                  <h1 className="text-2xl font-bold text-slate-900 font-display">
-                    {currentData.vendor.name || activeDoc.title}
-                  </h1>
-                </div>
-
-                {/* Action Toolbar */}
-                <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-                  {!isEditing ? (
-                    <button
-                      onClick={startEditing}
-                      className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      <Edit3 className="w-3.5 h-3.5" />
-                      <span>עריכת שדות</span>
-                    </button>
-                  ) : (
-                    <>
-                      <button
-                        onClick={saveEditing}
-                        className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                      >
-                        <Save className="w-3.5 h-3.5" />
-                        <span>שמור שינויים</span>
-                      </button>
-                      <button
-                        onClick={() => {
-                          setIsEditing(false);
-                          setEditDraft(null);
-                        }}
-                        className="px-3 py-2 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                      >
-                        ביטול
-                      </button>
-                    </>
-                  )}
-
-                  <button
-                    onClick={() => openEmailModal(activeDoc)}
-                    className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    <Mail className="w-3.5 h-3.5" />
-                    <span>שליחת קובץ וניתוח במייל</span>
-                  </button>
-
-                  <button
-                    onClick={handleCopyMarkdown}
-                    className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    {copiedReport ? (
-                      <>
-                        <Check className="w-3.5 h-3.5 text-emerald-600" />
-                        <span className="text-emerald-700 font-semibold">
-                          הועתק ללוח
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-3.5 h-3.5" />
-                        <span>העתק סיכום בעברית</span>
-                      </>
-                    )}
-                  </button>
-
-                  {documents.length > 1 && (
-                    <button
-                      onClick={() => deleteDocument(activeDoc.id)}
-                      title="מחק מסמך"
-                      className="p-2 text-slate-400 hover:text-red-600 bg-white border border-slate-200 rounded-lg hover:bg-red-50 transition-colors cursor-pointer"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  )}
+                  <h2 className="text-lg font-bold text-white font-display">
+                    הרחבת המאגר אונליין — ייבוא 20 שירים מקוריים לפי אמן או ז&apos;אנר
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    הקלידו שם של זמר/ת או להקה (או לחצו על אחד האמנים המהירים) כדי להוסיף מיד עד 20 להיטים מקוריים שלהם למאגר
+                  </p>
                 </div>
               </div>
 
-              {/* 2-Column Split: Extracted Structured Data (Right in RTL) & Visual Document Inspector (Left in RTL) */}
-              <div className="grid grid-cols-1 xl:grid-cols-12 gap-8 items-start">
-                {/* Structured Extraction Column (7 cols) */}
-                <div className="xl:col-span-7 space-y-6">
-                  {/* Section 1: פרטי המסמך והספק */}
-                  <section className="bg-white border border-slate-200 rounded-lg p-6">
-                    <h2 className="text-base font-bold text-slate-900 mb-4 pb-2 border-b border-slate-100">
-                      01. פרטי המסמך ובית העסק (הספק)
-                    </h2>
+              <div className="flex flex-col sm:flex-row gap-3">
+                <div className="relative flex-1">
+                  <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={discoverQuery}
+                    onChange={(e) => setDiscoverQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        handleImportSongsFromItunes();
+                      }
+                    }}
+                    placeholder="חפש אמן או להקה להוספת שירים (למשל: אייל גולן, שלמה ארצי, נועה קירל, Coldplay)..."
+                    className="w-full pr-10 pl-4 py-2.5 text-sm bg-[#0F172A] border border-slate-700 rounded-lg text-white focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+                <button
+                  type="button"
+                  disabled={isImportingBatch || !discoverQuery.trim()}
+                  onClick={() => handleImportSongsFromItunes()}
+                  className="px-5 py-2.5 text-sm font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                >
+                  {isImportingBatch ? "מייבא שירים..." : "ייבא 20 שירים למאגר"}
+                </button>
+              </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-y-4 gap-x-6 text-sm">
-                      <div>
-                        <span className="block text-xs text-slate-500 mb-1">
-                          סוג המסמך
-                        </span>
-                        {isEditing && editDraft ? (
-                          <input
-                            type="text"
-                            value={editDraft.documentType}
-                            onChange={(e) =>
-                              setEditDraft({
-                                ...editDraft,
-                                documentType: e.target.value,
-                              })
-                            }
-                            className="w-full px-2.5 py-1 border border-slate-300 rounded text-sm"
-                          />
-                        ) : (
-                          <span className="font-semibold text-slate-900">
-                            {currentData.documentType || "—"}
-                          </span>
-                        )}
+              {/* Quick Artist One-Click Import Buttons */}
+              <div className="space-y-2">
+                <div className="text-xs text-slate-400">
+                  ייבוא מהיר בלחיצה אחת:
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {QUICK_IMPORT_ARTISTS.map((artistName) => (
+                    <button
+                      key={artistName}
+                      type="button"
+                      disabled={isImportingBatch}
+                      onClick={() => handleImportSongsFromItunes(artistName)}
+                      className="px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#0F172A] border border-slate-700 hover:border-amber-400 hover:text-amber-300 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                    >
+                      + {artistName}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {importStatusMsg && (
+                <div className="text-xs font-semibold text-emerald-400 bg-[#0F172A] border border-emerald-800/60 rounded-lg px-4 py-2.5">
+                  {importStatusMsg}
+                </div>
+              )}
+            </div>
+
+            {/* Add Single Custom Song Form */}
+            <form
+              onSubmit={handleAddCustomSong}
+              className="bg-[#1E293B] border border-slate-800 rounded-xl p-6 space-y-4"
+            >
+              <h2 className="text-lg font-bold text-white font-display">
+                הוספת שיר בודד או העלאת קובץ MP3 מהמכשיר
+              </h2>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs text-slate-300 mb-1.5">
+                    שם השיר
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={newSongTitle}
+                    onChange={(e) => setNewSongTitle(e.target.value)}
+                    placeholder="למשל: יוניקורן"
+                    className="w-full px-3.5 py-2.5 text-sm bg-[#0F172A] border border-slate-700 rounded-lg text-white focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-300 mb-1.5">
+                    שם האמן / להקה
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={newSongArtist}
+                    onChange={(e) => setNewSongArtist(e.target.value)}
+                    placeholder="למשל: נועה קירל"
+                    className="w-full px-3.5 py-2.5 text-sm bg-[#0F172A] border border-slate-700 rounded-lg text-white focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-300 mb-1.5">
+                    רמז לקבוצה (אופציונלי)
+                  </label>
+                  <input
+                    type="text"
+                    value={newSongHint}
+                    onChange={(e) => setNewSongHint(e.target.value)}
+                    placeholder="למשל: להיט מתוך האירוויזיון"
+                    className="w-full px-3.5 py-2.5 text-sm bg-[#0F172A] border border-slate-700 rounded-lg text-white focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-4 pt-2">
+                <div className="flex items-center gap-3">
+                  <input
+                    ref={audioFileInputRef}
+                    type="file"
+                    accept="audio/*"
+                    onChange={handleCustomAudioUpload}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => audioFileInputRef.current?.click()}
+                    className="flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-200 bg-[#0F172A] border border-slate-700 rounded-lg hover:border-slate-500 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <Upload className="w-4 h-4 text-amber-400" />
+                    <span>
+                      {newSongFileName
+                        ? `קובץ נבחר: ${newSongFileName}`
+                        : "העלאת קובץ MP3 / שמע (אופציונלי)"}
+                    </span>
+                  </button>
+                </div>
+
+                <button
+                  type="submit"
+                  className="px-5 py-2.5 text-sm font-semibold text-slate-950 bg-amber-400 rounded-lg hover:bg-amber-300 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  הוסף שיר למשחק
+                </button>
+              </div>
+            </form>
+
+            {/* Song List Table with Search */}
+            <div className="bg-[#1E293B] border border-slate-800 rounded-xl overflow-hidden">
+              <div className="p-4 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="text-sm font-bold text-white">
+                  רשימת כל השירים במאגר ({filteredLibrarySongs.length})
+                </div>
+                <input
+                  type="text"
+                  value={libraryFilterText}
+                  onChange={(e) => setLibraryFilterText(e.target.value)}
+                  placeholder="סינון לפי שם שיר, אמן או קטגוריה..."
+                  className="w-full sm:w-72 px-3.5 py-1.5 text-xs bg-[#0F172A] border border-slate-700 rounded-lg text-white focus:outline-none focus:border-amber-400"
+                />
+              </div>
+
+              <div className="overflow-x-auto max-h-[540px] overflow-y-auto">
+                <table className="w-full text-right text-sm">
+                  <thead className="bg-[#0F172A] text-slate-400 text-xs border-b border-slate-800 sticky top-0">
+                    <tr>
+                      <th className="py-3.5 px-4 font-medium">#</th>
+                      <th className="py-3.5 px-4 font-medium">שם השיר</th>
+                      <th className="py-3.5 px-4 font-medium">אמן מבצע</th>
+                      <th className="py-3.5 px-4 font-medium">קטגוריה ושנה</th>
+                      <th className="py-3.5 px-4 font-medium">סטטוס</th>
+                      <th className="py-3.5 px-4 font-medium">בדיקת שיר מקורי</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/80">
+                    {filteredLibrarySongs.map((song, idx) => {
+                      const alreadyPlayed = usedSongIds.includes(song.id);
+                      return (
+                        <tr
+                          key={song.id}
+                          className="hover:bg-slate-800/40 transition-colors"
+                        >
+                          <td className="py-3 px-4 font-mono-tabular text-slate-400">
+                            {idx + 1}
+                          </td>
+                          <td className="py-3 px-4 font-semibold text-white">
+                            {song.title}
+                          </td>
+                          <td className="py-3 px-4 text-slate-300">
+                            {song.artist}
+                          </td>
+                          <td className="py-3 px-4 text-xs text-slate-400 tabular-nums">
+                            {song.categoryLabel} · {song.year}
+                          </td>
+                          <td className="py-3 px-4 text-xs">
+                            {alreadyPlayed ? (
+                              <span className="text-slate-500">
+                                הושמע לאחרונה
+                              </span>
+                            ) : (
+                              <span className="text-emerald-400">
+                                זמין להגרלה
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 px-4">
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  playSongSnippetRange(
+                                    song,
+                                    0,
+                                    INITIAL_SNIPPET_SECONDS
+                                  )
+                                }
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-300 bg-[#0F172A] border border-slate-700 rounded-lg hover:border-amber-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                              >
+                                <Play className="w-3.5 h-3.5" />
+                                <span>5 שניות ראשונות</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  playSongSnippetRange(song, 5, 15)
+                                }
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-300 bg-[#0F172A] border border-slate-700 rounded-lg hover:border-slate-500 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                              >
+                                <FastForward className="w-3.5 h-3.5" />
+                                <span>המשך השיר</span>
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB: RULES & SOUND CHECK */}
+        {activeTab === "rules" && (
+          <div className="max-w-3xl mx-auto space-y-6">
+            <div className="bg-[#1E293B] border border-slate-800 rounded-xl p-6 sm:p-8 space-y-6">
+              <h1 className="text-2xl sm:text-3xl font-bold font-display text-white">
+                חוקי המשחק, שיטת הניקוד ובדיקת סאונד
+              </h1>
+
+              <div className="space-y-4 text-slate-300 text-base leading-relaxed">
+                <p>
+                  <strong className="text-white">
+                    01. הגדרת קבוצות, מספר סיבובים וניקוד:
+                  </strong>{" "}
+                  לפני תחילת המשחק מגדירים את הקבוצות, מספר הסיבובים למשחק, כמה
+                  נקודות שווה ניחוש נכון (ברירת מחדל:{" "}
+                  <strong className="text-amber-400">10 נקודות</strong>), כמה
+                  עולה תוספת של 5 שניות מהשיר (ברירת מחדל:{" "}
+                  <strong className="text-amber-400">5 נקודות</strong>) וכמה עולה
+                  רמז.
+                </p>
+                <p>
+                  <strong className="text-white">
+                    02. מאגר עצום של מעל 107 שירים ללא חזרות:
+                  </strong>{" "}
+                  המשחק זוכר אילו שירים כבר הושמעו גם בין משחקים שונים, כך
+                  שהשירים לא חוזרים על עצמם. בנוסף ניתן לייבא בלחיצה אחת עשרות
+                  שירים נוספים של כל אמן מ-Apple Music / iTunes.
+                </p>
+                <p>
+                  <strong className="text-white">
+                    03. השמעת המשך השיר אחרי הצלחה או כישלון:
+                  </strong>{" "}
+                  מיד לאחר בחירת התשובה יושמע צליל הצלחה או צליל כישלון צורם,
+                  ולאחריו{" "}
+                  <strong className="text-amber-400">
+                    יתנגן המשך השיר המקורי
+                  </strong>{" "}
+                  כדי שכל הקבוצות יוכלו לשמוע ולהכיר את השיר.
+                </p>
+                <p>
+                  <strong className="text-white">
+                    04. מוד ניקוד יורד לפי זמן (Time-Decay):
+                  </strong>{" "}
+                  ניתן להפעיל מוד שבו הניקוד יורד ככל שהשניות חולפות — לדוגמה, אם
+                  נקבעו 10 שניות לניחוש ו-10 נקודות לתשובה נכונה, ניחוש אחרי 5
+                  שניות יעניק לקבוצה 5 נקודות.
+                </p>
+              </div>
+
+              <div className="pt-4 border-t border-slate-800 space-y-3">
+                <h2 className="text-sm font-semibold text-slate-300">
+                  בדיקת אפקטים קוליים:
+                </h2>
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={() => soundEngine.playSuccessSound()}
+                    className="flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-emerald-300 bg-[#0F172A] border border-emerald-800/70 rounded-lg hover:bg-emerald-950/50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    <span>השמע צליל הצלחה</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => soundEngine.playFailureSound()}
+                    className="flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-rose-300 bg-[#0F172A] border border-rose-800/70 rounded-lg hover:bg-rose-950/50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <XCircle className="w-4 h-4 text-rose-400" />
+                    <span>השמע צליל כישלון צורם</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => soundEngine.playVictorySound()}
+                    className="flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-amber-300 bg-[#0F172A] border border-amber-700/70 rounded-lg hover:bg-amber-950/50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <Trophy className="w-4 h-4 text-amber-400" />
+                    <span>השמע צליל ניצחון לזוכה</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB: SETUP OR ARENA IN TITLE_MENU */}
+        {(activeTab === "setup" ||
+          (activeTab === "arena" && gameState === "TITLE_MENU")) && (
+          <div className="space-y-8">
+            {/* Hero Split Banner */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch bg-[#1E293B] border border-slate-800 rounded-2xl p-6 sm:p-8">
+              <div className="lg:col-span-7 flex flex-col justify-between space-y-6">
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-amber-400 font-medium tabular-nums">
+                    <span>{allSongs.length} שירים מקוריים במאגר</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{totalRounds} סיבובים</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{pointsPerCorrect} נק&apos; לניחוש נכון</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{extraTimeCost} נק&apos; ל-5 שניות נוספות</span>
+                  </div>
+
+                  <h1
+                    className="text-3xl sm:text-4xl lg:text-5xl font-extrabold font-display text-white tracking-tight leading-tight"
+                    style={{ textWrap: "balance" }}
+                  >
+                    מזהים את השיר המקורי ב-5 שניות?
+                  </h1>
+
+                  <p className="text-slate-300 text-base sm:text-lg max-w-2xl leading-relaxed">
+                    מאגר מורחב של מעל {allSongs.length} להיטים ישראליים,
+                    ים-תיכוניים, רוק, קלאסיקות, אירוויזיון ובינלאומיים ללא חזרה
+                    על שירים! בתור של כל קבוצה תושמע ההתחלה של השיר המקורי, ומיד
+                    אחרי הניחוש יתנגן המשך השיר.
+                  </p>
+                </div>
+
+                {/* Quick Sound Effects Test Bar */}
+                <div className="pt-2 space-y-2.5">
+                  <div className="text-xs text-slate-400">
+                    בדיקת צלילי המשחק לפני שמתחילים:
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => soundEngine.playSuccessSound()}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-emerald-300 bg-[#0F172A] border border-slate-700 hover:border-emerald-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <Volume2 className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>צליל הצלחה</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => soundEngine.playFailureSound()}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-rose-300 bg-[#0F172A] border border-slate-700 hover:border-rose-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <Volume2 className="w-3.5 h-3.5 text-rose-400" />
+                      <span>צליל כישלון צורם</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => soundEngine.playVictorySound()}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-amber-300 bg-[#0F172A] border border-slate-700 hover:border-amber-400 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <Trophy className="w-3.5 h-3.5 text-amber-400" />
+                      <span>צליל ניצחון לזוכה</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Right Visual Stage Card with Resilient Fallback */}
+              <div className="lg:col-span-5 relative rounded-xl overflow-hidden bg-[#0F172A] border border-slate-800 min-h-[220px] flex items-center justify-center">
+                {!heroImgBroken ? (
+                  <>
+                    <img
+                      src={HERO_STAGE_IMAGE}
+                      alt="אולפן הקלטות ופטיפון למשחק זיהוי שירים"
+                      referrerPolicy="no-referrer"
+                      onError={() => setHeroImgBroken(true)}
+                      className="w-full h-full object-cover min-h-[220px]"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/35 to-transparent flex flex-col justify-end p-5">
+                      <div className="text-xs text-amber-300 font-medium tabular-nums">
+                        {unplayedInPoolCount} שירים טרם הושמעו בקטגוריה זו
                       </div>
-
-                      <div>
-                        <span className="block text-xs text-slate-500 mb-1">
-                          מספר חשבונית / אסמכתא
-                        </span>
-                        {isEditing && editDraft ? (
-                          <input
-                            type="text"
-                            value={editDraft.documentNumber}
-                            onChange={(e) =>
-                              setEditDraft({
-                                ...editDraft,
-                                documentNumber: e.target.value,
-                              })
-                            }
-                            className="w-full px-2.5 py-1 border border-slate-300 rounded text-sm font-mono-tabular"
-                          />
-                        ) : (
-                          <span className="font-semibold text-slate-900 font-mono-tabular tabular-nums">
-                            {currentData.documentNumber || "—"}
-                          </span>
-                        )}
-                      </div>
-
-                      <div>
-                        <span className="block text-xs text-slate-500 mb-1">
-                          תאריך המסמך
-                        </span>
-                        {isEditing && editDraft ? (
-                          <input
-                            type="text"
-                            value={editDraft.date}
-                            onChange={(e) =>
-                              setEditDraft({
-                                ...editDraft,
-                                date: e.target.value,
-                              })
-                            }
-                            className="w-full px-2.5 py-1 border border-slate-300 rounded text-sm font-mono-tabular"
-                          />
-                        ) : (
-                          <span className="font-semibold text-slate-900 font-mono-tabular tabular-nums">
-                            {currentData.date || "—"}
-                          </span>
-                        )}
-                      </div>
-
-                      <div>
-                        <span className="block text-xs text-slate-500 mb-1">
-                          עוסק מורשה (ע"מ) / ח.פ
-                        </span>
-                        {isEditing && editDraft ? (
-                          <input
-                            type="text"
-                            value={editDraft.vendor.taxId}
-                            onChange={(e) =>
-                              setEditDraft({
-                                ...editDraft,
-                                vendor: {
-                                  ...editDraft.vendor,
-                                  taxId: e.target.value,
-                                },
-                              })
-                            }
-                            className="w-full px-2.5 py-1 border border-slate-300 rounded text-sm font-mono-tabular"
-                          />
-                        ) : (
-                          <span className="font-semibold text-slate-900 font-mono-tabular tabular-nums">
-                            {currentData.vendor.taxId || "—"}
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="sm:col-span-2">
-                        <span className="block text-xs text-slate-500 mb-1">
-                          שם העסק / הספק
-                        </span>
-                        {isEditing && editDraft ? (
-                          <input
-                            type="text"
-                            value={editDraft.vendor.name}
-                            onChange={(e) =>
-                              setEditDraft({
-                                ...editDraft,
-                                vendor: {
-                                  ...editDraft.vendor,
-                                  name: e.target.value,
-                                },
-                              })
-                            }
-                            className="w-full px-2.5 py-1 border border-slate-300 rounded text-sm"
-                          />
-                        ) : (
-                          <span className="font-semibold text-slate-900">
-                            {currentData.vendor.name || "—"}
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="sm:col-span-2">
-                        <span className="block text-xs text-slate-500 mb-1">
-                          תחום עיסוק
-                        </span>
-                        {isEditing && editDraft ? (
-                          <input
-                            type="text"
-                            value={editDraft.vendor.businessField}
-                            onChange={(e) =>
-                              setEditDraft({
-                                ...editDraft,
-                                vendor: {
-                                  ...editDraft.vendor,
-                                  businessField: e.target.value,
-                                },
-                              })
-                            }
-                            className="w-full px-2.5 py-1 border border-slate-300 rounded text-sm"
-                          />
-                        ) : (
-                          <span className="text-slate-800">
-                            {currentData.vendor.businessField || "—"}
-                          </span>
-                        )}
-                      </div>
-
-                      <div>
-                        <span className="block text-xs text-slate-500 mb-1">
-                          כתובת הספק
-                        </span>
-                        {isEditing && editDraft ? (
-                          <input
-                            type="text"
-                            value={editDraft.vendor.address}
-                            onChange={(e) =>
-                              setEditDraft({
-                                ...editDraft,
-                                vendor: {
-                                  ...editDraft.vendor,
-                                  address: e.target.value,
-                                },
-                              })
-                            }
-                            className="w-full px-2.5 py-1 border border-slate-300 rounded text-sm"
-                          />
-                        ) : (
-                          <span className="text-slate-800">
-                            {currentData.vendor.address || "—"}
-                          </span>
-                        )}
-                      </div>
-
-                      <div>
-                        <span className="block text-xs text-slate-500 mb-1">
-                          טלפונים ליצירת קשר
-                        </span>
-                        {isEditing && editDraft ? (
-                          <div className="flex gap-2">
-                            <input
-                              type="text"
-                              placeholder="טלפון"
-                              value={editDraft.vendor.phone}
-                              onChange={(e) =>
-                                setEditDraft({
-                                  ...editDraft,
-                                  vendor: {
-                                    ...editDraft.vendor,
-                                    phone: e.target.value,
-                                  },
-                                })
-                              }
-                              className="w-1/2 px-2 py-1 border border-slate-300 rounded text-xs font-mono-tabular"
-                            />
-                            <input
-                              type="text"
-                              placeholder="נייד"
-                              value={editDraft.vendor.mobile}
-                              onChange={(e) =>
-                                setEditDraft({
-                                  ...editDraft,
-                                  vendor: {
-                                    ...editDraft.vendor,
-                                    mobile: e.target.value,
-                                  },
-                                })
-                              }
-                              className="w-1/2 px-2 py-1 border border-slate-300 rounded text-xs font-mono-tabular"
-                            />
-                          </div>
-                        ) : (
-                          <span className="font-mono-tabular tabular-nums text-slate-800">
-                            {[
-                              currentData.vendor.phone,
-                              currentData.vendor.mobile
-                                ? `נייד: ${currentData.vendor.mobile}`
-                                : "",
-                            ]
-                              .filter(Boolean)
-                              .join(" · ") || "—"}
-                          </span>
-                        )}
+                      <div className="text-lg font-bold text-white font-display mt-0.5">
+                        {teams.length} קבוצות · {totalRounds} סיבובים
                       </div>
                     </div>
-                  </section>
-
-                  {/* Section 2: פרטי הלקוח */}
-                  <section className="bg-white border border-slate-200 rounded-lg p-6">
-                    <h2 className="text-base font-bold text-slate-900 mb-4 pb-2 border-b border-slate-100">
-                      02. פרטי הלקוח (לכבוד)
-                    </h2>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
-                      <div>
-                        <span className="block text-xs text-slate-500 mb-1">
-                          לכבוד
-                        </span>
-                        {isEditing && editDraft ? (
-                          <input
-                            type="text"
-                            value={editDraft.customer.name}
-                            onChange={(e) =>
-                              setEditDraft({
-                                ...editDraft,
-                                customer: {
-                                  ...editDraft.customer,
-                                  name: e.target.value,
-                                },
-                              })
-                            }
-                            className="w-full px-2.5 py-1 border border-slate-300 rounded text-sm"
-                          />
-                        ) : (
-                          <span className="font-semibold text-slate-900">
-                            {currentData.customer.name || "—"}
-                          </span>
-                        )}
-                      </div>
-                      <div>
-                        <span className="block text-xs text-slate-500 mb-1">
-                          כתובת הלקוח
-                        </span>
-                        {isEditing && editDraft ? (
-                          <input
-                            type="text"
-                            value={editDraft.customer.address}
-                            onChange={(e) =>
-                              setEditDraft({
-                                ...editDraft,
-                                customer: {
-                                  ...editDraft.customer,
-                                  address: e.target.value,
-                                },
-                              })
-                            }
-                            className="w-full px-2.5 py-1 border border-slate-300 rounded text-sm"
-                          />
-                        ) : (
-                          <span className="text-slate-800">
-                            {currentData.customer.address || "—"}
-                          </span>
-                        )}
-                      </div>
+                  </>
+                ) : (
+                  <div className="p-8 text-center space-y-3">
+                    <Disc3 className="w-12 h-12 text-amber-400 mx-auto" />
+                    <div className="text-lg font-bold text-white font-display">
+                      אולפן זיהוי שירים מקוריים
                     </div>
-                  </section>
+                    <div className="text-xs text-slate-400">
+                      {allSongs.length} שירים במאגר · ללא חזרות
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
 
-                  {/* Section 3: פירוט השירות / פריטים */}
-                  <section className="bg-white border border-slate-200 rounded-lg p-6">
-                    <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-100">
-                      <h2 className="text-base font-bold text-slate-900">
-                        03. פירוט השירות / פריטים
+            {/* Pre-Game Team & Scoring Rules Setup Grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+              {/* Left/Main Column: Teams & Scoring Configuration */}
+              <div className="lg:col-span-8 space-y-6">
+                {/* 1. Team Count & Names */}
+                <div className="bg-[#1E293B] border border-slate-800 rounded-2xl p-6 sm:p-8 space-y-6">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-5">
+                    <div>
+                      <h2 className="text-xl font-bold font-display text-white flex items-center gap-2">
+                        <Users className="w-5 h-5 text-amber-400" />
+                        <span>1. הגדרת הקבוצות המשתתפות</span>
                       </h2>
-                      {isEditing && editDraft && (
+                      <p className="text-xs text-slate-400 mt-1">
+                        בחרו את מספר הקבוצות (2 עד 6) והגדירו שם לכל קבוצה
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 bg-[#0F172A] p-1.5 rounded-lg border border-slate-800 self-start">
+                      <button
+                        type="button"
+                        onClick={() => setTeamCount(teams.length - 1)}
+                        disabled={teams.length <= 2}
+                        aria-label="הפחת קבוצה"
+                        className="p-1.5 text-slate-300 hover:text-white disabled:opacity-40 cursor-pointer"
+                      >
+                        <Minus className="w-4 h-4" />
+                      </button>
+                      {[2, 3, 4, 5, 6].map((num) => (
+                        <button
+                          key={num}
+                          type="button"
+                          onClick={() => setTeamCount(num)}
+                          className={`px-3 py-1 text-xs font-bold rounded-md transition-colors tabular-nums whitespace-nowrap shrink-0 cursor-pointer ${
+                            teams.length === num
+                              ? "bg-amber-400 text-slate-950"
+                              : "text-slate-300 hover:text-white"
+                          }`}
+                        >
+                          {num}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => setTeamCount(teams.length + 1)}
+                        disabled={teams.length >= 6}
+                        aria-label="הוסף קבוצה"
+                        className="p-1.5 text-slate-300 hover:text-white disabled:opacity-40 cursor-pointer"
+                      >
+                        <Plus className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {teams.map((team, idx) => (
+                      <div
+                        key={team.id}
+                        className="bg-[#0F172A] border border-slate-800 rounded-xl p-4 flex items-center gap-3.5"
+                      >
+                        <div
+                          className="w-9 h-9 rounded-lg flex items-center justify-center font-bold text-sm text-slate-950 shrink-0 tabular-nums"
+                          style={{ backgroundColor: team.accentHex }}
+                        >
+                          {idx + 1}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <label
+                            htmlFor={`team-input-${idx}`}
+                            className="block text-xs text-slate-400 mb-1"
+                          >
+                            שם קבוצה {idx + 1} · תור #{idx + 1}
+                          </label>
+                          <input
+                            id={`team-input-${idx}`}
+                            type="text"
+                            value={team.name}
+                            onChange={(e) =>
+                              updateTeamName(idx, e.target.value)
+                            }
+                            placeholder={`קבוצה ${idx + 1}`}
+                            className="w-full bg-transparent text-white font-semibold text-base border-b border-slate-700 focus:border-amber-400 focus:outline-none pb-1"
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 2. Configurable Rounds, Points, Extra 5s Cost, Hint Cost & Time-Decay Mode */}
+                <div className="bg-[#1E293B] border border-slate-800 rounded-2xl p-6 sm:p-8 space-y-6">
+                  <div className="border-b border-slate-800 pb-4">
+                    <h2 className="text-xl font-bold font-display text-white flex items-center gap-2">
+                      <Sliders className="w-5 h-5 text-amber-400" />
+                      <span>2. הגדרת סיבובים, ניקוד ומוד זמן</span>
+                    </h2>
+                    <p className="text-xs text-slate-400 mt-1">
+                      קבעו כמה סיבובים יכלול המשחק, כמה נקודות שווה תשובה נכונה וכמה יעלו 5 שניות נוספות או רמז
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    {/* Number of Rounds */}
+                    <div className="bg-[#0F172A] border border-slate-800 rounded-xl p-4 space-y-2">
+                      <label
+                        htmlFor="rounds-input"
+                        className="block text-xs font-semibold text-slate-300"
+                      >
+                        מספר סיבובים למשחק
+                      </label>
+                      <div className="flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setTotalRounds((r) => Math.max(1, r - 1))
+                          }
+                          className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg cursor-pointer"
+                        >
+                          <Minus className="w-4 h-4" />
+                        </button>
+                        <input
+                          id="rounds-input"
+                          type="number"
+                          min={1}
+                          max={30}
+                          value={totalRounds}
+                          onChange={(e) =>
+                            setTotalRounds(
+                              Math.max(
+                                1,
+                                Math.min(30, Number(e.target.value) || 1)
+                              )
+                            )
+                          }
+                          className="w-full text-center font-mono-tabular font-bold text-lg text-amber-400 bg-transparent focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setTotalRounds((r) => Math.min(30, r + 1))
+                          }
+                          className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg cursor-pointer"
+                        >
+                          <Plus className="w-4 h-4" />
+                        </button>
+                      </div>
+                      <div className="text-[11px] text-slate-400 tabular-nums">
+                        סה&quot;כ {totalRounds * teams.length} תורות במשחק
+                      </div>
+                    </div>
+
+                    {/* Points for Correct Answer */}
+                    <div className="bg-[#0F172A] border border-slate-800 rounded-xl p-4 space-y-2">
+                      <label
+                        htmlFor="correct-pts-input"
+                        className="block text-xs font-semibold text-slate-300"
+                      >
+                        נקודות לניחוש נכון
+                      </label>
+                      <div className="flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPointsPerCorrect((p) => Math.max(1, p - 1))
+                          }
+                          className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg cursor-pointer"
+                        >
+                          <Minus className="w-4 h-4" />
+                        </button>
+                        <input
+                          id="correct-pts-input"
+                          type="number"
+                          min={1}
+                          max={100}
+                          value={pointsPerCorrect}
+                          onChange={(e) =>
+                            setPointsPerCorrect(
+                              Math.max(
+                                1,
+                                Math.min(100, Number(e.target.value) || 10)
+                              )
+                            )
+                          }
+                          className="w-full text-center font-mono-tabular font-bold text-lg text-emerald-400 bg-transparent focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPointsPerCorrect((p) => Math.min(100, p + 1))
+                          }
+                          className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg cursor-pointer"
+                        >
+                          <Plus className="w-4 h-4" />
+                        </button>
+                      </div>
+                      <div className="text-[11px] text-slate-400">
+                        ברירת מחדל: 10 נקודות
+                      </div>
+                    </div>
+
+                    {/* Cost per Extra 5 Seconds */}
+                    <div className="bg-[#0F172A] border border-slate-800 rounded-xl p-4 space-y-2">
+                      <label
+                        htmlFor="extra-sec-cost-input"
+                        className="block text-xs font-semibold text-slate-300"
+                      >
+                        עלות 5 שניות נוספות
+                      </label>
+                      <div className="flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExtraTimeCost((c) => Math.max(0, c - 1))
+                          }
+                          className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg cursor-pointer"
+                        >
+                          <Minus className="w-4 h-4" />
+                        </button>
+                        <input
+                          id="extra-sec-cost-input"
+                          type="number"
+                          min={0}
+                          max={50}
+                          value={extraTimeCost}
+                          onChange={(e) =>
+                            setExtraTimeCost(
+                              Math.max(
+                                0,
+                                Math.min(50, Number(e.target.value) || 0)
+                              )
+                            )
+                          }
+                          className="w-full text-center font-mono-tabular font-bold text-lg text-amber-400 bg-transparent focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExtraTimeCost((c) => Math.min(50, c + 1))
+                          }
+                          className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg cursor-pointer"
+                        >
+                          <Plus className="w-4 h-4" />
+                        </button>
+                      </div>
+                      <div className="text-[11px] text-slate-400">
+                        ברירת מחדל: 5 נקודות
+                      </div>
+                    </div>
+
+                    {/* Cost for Hint */}
+                    <div className="bg-[#0F172A] border border-slate-800 rounded-xl p-4 space-y-2">
+                      <label
+                        htmlFor="hint-cost-input"
+                        className="block text-xs font-semibold text-slate-300"
+                      >
+                        עלות רמז לשיר
+                      </label>
+                      <div className="flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setHintCost((c) => Math.max(0, c - 1))
+                          }
+                          className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg cursor-pointer"
+                        >
+                          <Minus className="w-4 h-4" />
+                        </button>
+                        <input
+                          id="hint-cost-input"
+                          type="number"
+                          min={0}
+                          max={50}
+                          value={hintCost}
+                          onChange={(e) =>
+                            setHintCost(
+                              Math.max(
+                                0,
+                                Math.min(50, Number(e.target.value) || 0)
+                              )
+                            )
+                          }
+                          className="w-full text-center font-mono-tabular font-bold text-lg text-sky-400 bg-transparent focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setHintCost((c) => Math.min(50, c + 1))
+                          }
+                          className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg cursor-pointer"
+                        >
+                          <Plus className="w-4 h-4" />
+                        </button>
+                      </div>
+                      <div className="text-[11px] text-slate-400">
+                        יורד מניקוד השאלה
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Time-Decay Scoring Mode Configuration */}
+                  <div className="bg-[#0F172A] border border-slate-800 rounded-xl p-5 space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 font-bold text-white text-base">
+                          <Clock className="w-4 h-4 text-amber-400" />
+                          <span>
+                            מוד הורדת נקודות ככל שהזמן עובר (ניקוד תלוי-זמן)
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-400">
+                          ככל שהקבוצה עונה מהר יותר היא מקבלת יותר נקודות. לדוגמה: אם יש{" "}
+                          {guessTimeLimitSeconds} שניות לניחוש ועברו{" "}
+                          {Math.round(guessTimeLimitSeconds / 2)} שניות מתוך{" "}
+                          {pointsPerCorrect} נקודות, הקבוצה תקבל{" "}
+                          {Math.round(pointsPerCorrect / 2)} נקודות.
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 bg-[#1E293B] p-1 rounded-lg border border-slate-700 shrink-0 self-start">
+                        <button
+                          type="button"
+                          onClick={() => setIsTimeDecayMode(false)}
+                          className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                            !isTimeDecayMode
+                              ? "bg-amber-400 text-slate-950"
+                              : "text-slate-300 hover:text-white"
+                          }`}
+                        >
+                          ניקוד קבוע
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIsTimeDecayMode(true)}
+                          className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                            isTimeDecayMode
+                              ? "bg-amber-400 text-slate-950"
+                              : "text-slate-300 hover:text-white"
+                          }`}
+                        >
+                          ניקוד יורד לפי זמן
+                        </button>
+                      </div>
+                    </div>
+
+                    {isTimeDecayMode && (
+                      <div className="pt-3 border-t border-slate-800 flex flex-wrap items-center justify-between gap-4">
+                        <span className="text-xs text-slate-300 font-medium">
+                          זמן מוקצב לניחוש בכל תור (בשניות):
+                        </span>
+                        <div className="flex items-center gap-2">
+                          {[6, 10, 15, 20, 30].map((sec) => (
+                            <button
+                              key={sec}
+                              type="button"
+                              onClick={() => setGuessTimeLimitSeconds(sec)}
+                              className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition-colors tabular-nums cursor-pointer ${
+                                guessTimeLimitSeconds === sec
+                                  ? "bg-amber-400 text-slate-950 border-amber-400"
+                                  : "bg-[#1E293B] text-slate-300 border-slate-700 hover:text-white"
+                              }`}
+                            >
+                              {sec} שניות
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* SoundEngine Independent Volume & Boost Mixer */}
+                  <div className="bg-[#0F172A] border border-slate-800 rounded-xl p-5 space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2 font-bold text-white text-base">
+                          <Volume2 className="w-4 h-4 text-amber-400" />
+                          <span>
+                            הגברת עוצמת השיר המקורי בנפרד מהליווי (SoundEngine Mixer)
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          הגבירו את השיר המקורי עד 250% (Pre-Amp Boost) והנמיכו את הליווי כדי להבדיל בצורה חדה וברורה בין השיר לליווי
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0 self-start">
                         <button
                           type="button"
                           onClick={() => {
-                            const nextItems: DocumentLineItem[] = [
-                              ...editDraft.lineItems,
-                              {
-                                description: "פריט חדש",
-                                quantity: "1 יח'",
-                                unitPrice: 0,
-                                total: 0,
-                              },
-                            ];
-                            setEditDraft({
-                              ...editDraft,
-                              lineItems: nextItems,
-                            });
+                            handleOriginalSongVolumeChange(2.0);
+                            handleAccompanimentVolumeChange(0.3);
                           }}
-                          className="flex items-center gap-1 text-xs font-semibold text-blue-700 hover:text-blue-900 cursor-pointer"
+                          className="px-3 py-1.5 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
                         >
-                          <Plus className="w-3.5 h-3.5" />
-                          <span>הוסף שורה</span>
+                          הדגשת שיר מקסימלית (200%)
                         </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleOriginalSongVolumeChange(1.5);
+                            handleAccompanimentVolumeChange(0.55);
+                          }}
+                          className="px-3 py-1.5 text-xs font-semibold text-slate-300 bg-[#1E293B] border border-slate-700 hover:text-white rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                        >
+                          ברירת מחדל
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-800/80">
+                      {/* Original Song Boost Slider */}
+                      <div className="bg-[#1E293B] border border-slate-700/80 rounded-lg p-3.5 space-y-2">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-semibold text-white">
+                            עוצמת השיר המקורי / מלודיה (Boost):
+                          </span>
+                          <span className="font-mono-tabular font-bold text-amber-400">
+                            {Math.round(originalSongVolume * 100)}%
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0.2}
+                          max={2.5}
+                          step={0.05}
+                          value={originalSongVolume}
+                          onChange={(e) =>
+                            handleOriginalSongVolumeChange(
+                              Number(e.target.value)
+                            )
+                          }
+                          aria-label="עוצמת השיר המקורי"
+                          className="w-full accent-amber-400 cursor-pointer"
+                        />
+                        <div className="flex justify-between text-[11px] text-slate-400 tabular-nums">
+                          <span>20%</span>
+                          <span>100% (רגיל)</span>
+                          <span>250% (הגברה חזקה)</span>
+                        </div>
+                      </div>
+
+                      {/* Accompaniment Volume Slider */}
+                      <div className="bg-[#1E293B] border border-slate-700/80 rounded-lg p-3.5 space-y-2">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-semibold text-slate-200">
+                            עוצמת הליווי והקצב ברקע:
+                          </span>
+                          <span className="font-mono-tabular font-bold text-sky-400">
+                            {Math.round(accompanimentVolume * 100)}%
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={1.5}
+                          step={0.05}
+                          value={accompanimentVolume}
+                          onChange={(e) =>
+                            handleAccompanimentVolumeChange(
+                              Number(e.target.value)
+                            )
+                          }
+                          aria-label="עוצמת הליווי"
+                          className="w-full accent-sky-400 cursor-pointer"
+                        />
+                        <div className="flex justify-between text-[11px] text-slate-400 tabular-nums">
+                          <span>0% (ללא ליווי)</span>
+                          <span>55% (מומלץ)</span>
+                          <span>150%</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Right Column: Playlist Category & Start Game CTA */}
+              <div className="lg:col-span-4 bg-[#1E293B] border border-slate-800 rounded-2xl p-6 sm:p-8 space-y-6">
+                <div>
+                  <h2 className="text-xl font-bold font-display text-white flex items-center gap-2">
+                    <Music className="w-5 h-5 text-amber-400" />
+                    <span>3. סגנון מוזיקלי ({allSongs.length} שירים)</span>
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-1">
+                    בחרו קטגוריה או שחקו עם כל השירים ללא חזרות
+                  </p>
+                </div>
+
+                {/* Category Filter Buttons */}
+                <div className="space-y-2">
+                  {[
+                    {
+                      id: "all",
+                      label: `הכל מכל (${allSongs.length} שירים במאגר)`,
+                    },
+                    ...(
+                      Object.keys(CATEGORY_LABELS) as SongCategory[]
+                    ).map((catKey) => ({
+                      id: catKey,
+                      label: `${CATEGORY_LABELS[catKey]} (${
+                        allSongs.filter((s) => s.category === catKey).length
+                      })`,
+                    })),
+                  ].map((cat) => (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() =>
+                        setSelectedCategory(cat.id as "all" | SongCategory)
+                      }
+                      className={`w-full text-right px-4 py-2.5 rounded-lg text-xs font-semibold transition-colors flex items-center justify-between cursor-pointer ${
+                        selectedCategory === cat.id
+                          ? "bg-amber-400 text-slate-950"
+                          : "bg-[#0F172A] text-slate-300 hover:text-white border border-slate-800"
+                      }`}
+                    >
+                      <span className="truncate">{cat.label}</span>
+                      {selectedCategory === cat.id && (
+                        <CheckCircle2 className="w-4 h-4 shrink-0" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Anti-Repetition Status & Quick Expand */}
+                <div className="bg-[#0F172A] border border-slate-800 rounded-xl p-4 space-y-3 text-xs text-slate-300">
+                  <div className="flex items-center justify-between">
+                    <span>שירים זמינים שטרם הושמעו:</span>
+                    <span className="font-bold text-emerald-400 tabular-nums">
+                      {unplayedInPoolCount} מתוך {filteredSongPool.length}
+                    </span>
+                  </div>
+
+                  {usedSongIds.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setUsedSongIds([])}
+                      className="w-full py-1.5 px-3 text-xs font-semibold text-slate-300 bg-[#1E293B] hover:text-white rounded-lg border border-slate-700 flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>איפוס היסטוריית שירים שהושמעו</span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("library")}
+                    className="w-full py-2 px-3 text-xs font-semibold text-amber-300 bg-[#1E293B] hover:border-amber-400 rounded-lg border border-slate-700 flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>ייבוא עוד שירים ואמנים למאגר</span>
+                  </button>
+                </div>
+
+                {/* Start Game Primary Action Button */}
+                <button
+                  type="button"
+                  onClick={startNewGame}
+                  className="w-full py-4 px-6 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-base rounded-xl transition-transform active:scale-[0.99] flex items-center justify-center gap-2 shadow-lg cursor-pointer whitespace-nowrap"
+                >
+                  <Play className="w-5 h-5 fill-current" />
+                  <span>
+                    התחל משחק ({teams.length} קבוצות · {totalRounds} סיבובים)
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB: ARENA — ACTIVE GAMEPLAY (PLAYING & ROUND_SUMMARY) */}
+        {activeTab === "arena" &&
+          (gameState === "PLAYING" || gameState === "ROUND_SUMMARY") &&
+          currentSong && (
+            <div className="space-y-6">
+              {/* Top Live Scoreboard HUD */}
+              <section
+                aria-label="לוח תוצאות הקבוצות"
+                className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3"
+              >
+                {teams.map((team, idx) => {
+                  const isCurrentTurn = idx === currentTeamIndex;
+                  return (
+                    <div
+                      key={team.id}
+                      className={`rounded-xl p-4 transition-all border ${
+                        isCurrentTurn
+                          ? "bg-[#1E293B] border-amber-400 shadow-md"
+                          : "bg-[#0F172A] border-slate-800 opacity-85"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                        <span className="text-xs font-medium text-slate-400 truncate">
+                          {isCurrentTurn ? "בתור כעת" : `קבוצה ${idx + 1}`}
+                        </span>
+                        <span className="font-mono-tabular text-sm font-extrabold text-amber-400">
+                          {team.score} נק&apos;
+                        </span>
+                      </div>
+
+                      <div className="font-bold text-white text-base truncate mb-2">
+                        {team.name}
+                      </div>
+
+                      <div className="text-[11px] text-slate-400 tabular-nums">
+                        {team.correctCount} נכונות · {team.wrongCount} שגויות
+                      </div>
+                    </div>
+                  );
+                })}
+              </section>
+
+              {/* Main Game Arena Stage */}
+              <div className="bg-[#1E293B] border border-slate-800 rounded-2xl p-6 sm:p-8 space-y-6">
+                {/* Active Team Turn & Potential Points Header */}
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-800 pb-5">
+                  <div className="space-y-1">
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 tabular-nums">
+                      <span>
+                        סיבוב {currentRound} מתוך {totalRounds}
+                      </span>
+                      <span aria-hidden="true">·</span>
+                      <span>{currentSong.categoryLabel}</span>
+                      <span aria-hidden="true">·</span>
+                      <span>
+                        אורך קטע פתוח: {unlockedSeconds} שניות ראשונות
+                      </span>
+                    </div>
+                    <h1 className="text-2xl sm:text-3xl font-extrabold font-display text-white flex items-center gap-3">
+                      <span>התור של:</span>
+                      <span style={{ color: activeTeam.accentHex }}>
+                        {activeTeam.name}
+                      </span>
+                    </h1>
+                  </div>
+
+                  {/* Live Potential Points & Extra 5s / Hint Purchase Controls */}
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="bg-[#0F172A] border border-slate-700 rounded-xl px-4 py-2.5 flex items-center gap-3">
+                      <div>
+                        <div className="text-[11px] text-slate-400">
+                          ניקוד לניחוש נכון כעת
+                        </div>
+                        <div className="font-mono-tabular text-lg font-extrabold text-emerald-400">
+                          +{currentPotentialPoints} נקודות
+                        </div>
+                      </div>
+                      {isTimeDecayMode && gameState === "PLAYING" && (
+                        <div className="border-r border-slate-700 pr-3">
+                          <div className="text-[11px] text-slate-400">
+                            זמן שנותר
+                          </div>
+                          <div className="font-mono-tabular text-lg font-extrabold text-amber-400">
+                            {Math.max(
+                              0,
+                              guessTimeLimitSeconds - elapsedGuessTime
+                            ).toFixed(1)}
+                            s
+                          </div>
+                        </div>
                       )}
                     </div>
 
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm border-collapse">
-                        <thead>
-                          <tr className="border-b border-slate-200 text-xs text-slate-500">
-                            <th className="py-2.5 pr-2 text-right font-medium">
-                              תיאור הפריט / השירות
-                            </th>
-                            <th className="py-2.5 px-3 text-right font-medium w-28">
-                              כמות
-                            </th>
-                            <th className="py-2.5 pl-2 text-left font-medium w-32">
-                              סכום ({currentData.financials.currency || 'ש"ח'})
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {currentData.lineItems.map((item, idx) => (
-                            <tr
-                              key={idx}
-                              className="hover:bg-slate-50/80 transition-colors"
-                            >
-                              <td className="py-3 pr-2 text-slate-900 font-medium">
-                                {isEditing && editDraft ? (
-                                  <input
-                                    type="text"
-                                    value={item.description}
-                                    onChange={(e) => {
-                                      const copy = [...editDraft.lineItems];
-                                      copy[idx] = {
-                                        ...copy[idx],
-                                        description: e.target.value,
-                                      };
-                                      setEditDraft({
-                                        ...editDraft,
-                                        lineItems: copy,
-                                      });
-                                    }}
-                                    className="w-full px-2 py-1 border border-slate-300 rounded text-sm"
-                                  />
-                                ) : (
-                                  item.description
-                                )}
-                              </td>
-                              <td className="py-3 px-3 text-slate-700 font-mono-tabular tabular-nums">
-                                {isEditing && editDraft ? (
-                                  <input
-                                    type="text"
-                                    value={item.quantity}
-                                    onChange={(e) => {
-                                      const copy = [...editDraft.lineItems];
-                                      copy[idx] = {
-                                        ...copy[idx],
-                                        quantity: e.target.value,
-                                      };
-                                      setEditDraft({
-                                        ...editDraft,
-                                        lineItems: copy,
-                                      });
-                                    }}
-                                    className="w-full px-2 py-1 border border-slate-300 rounded text-sm font-mono-tabular"
-                                  />
-                                ) : (
-                                  item.quantity
-                                )}
-                              </td>
-                              <td className="py-3 pl-2 text-left font-mono-tabular tabular-nums font-semibold text-slate-900">
-                                {isEditing && editDraft ? (
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    value={item.total}
-                                    onChange={(e) => {
-                                      const copy = [...editDraft.lineItems];
-                                      copy[idx] = {
-                                        ...copy[idx],
-                                        total: parseFloat(e.target.value) || 0,
-                                      };
-                                      setEditDraft({
-                                        ...editDraft,
-                                        lineItems: copy,
-                                      });
-                                    }}
-                                    className="w-full px-2 py-1 border border-slate-300 rounded text-sm font-mono-tabular text-left"
-                                  />
-                                ) : item.total > 0 ? (
-                                  `${item.total.toFixed(2)} ${
-                                    currentData.financials.currency
-                                  }`
-                                ) : (
-                                  "—"
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </section>
+                    {/* Buy +5 Extra Seconds Button */}
+                    <button
+                      type="button"
+                      disabled={
+                        gameState !== "PLAYING" ||
+                        unlockedSeconds >= MAX_SNIPPET_SECONDS
+                      }
+                      onClick={handleBuyExtraFiveSeconds}
+                      className="inline-flex items-center gap-2 px-4 py-3 text-xs font-bold text-amber-300 bg-[#0F172A] border border-amber-500/60 rounded-xl hover:bg-amber-950/40 transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-40 disabled:cursor-default"
+                    >
+                      <FastForward className="w-4 h-4 text-amber-400" />
+                      <span>
+                        +5 שניות נוספות מהשיר (
+                        {extraTimeCost > 0 ? `-${extraTimeCost} נק'` : "חינם"})
+                      </span>
+                    </button>
 
-                  {/* Section 4: סיכום כספי */}
-                  <section className="bg-white border border-slate-200 rounded-lg p-6">
-                    <h2 className="text-base font-bold text-slate-900 mb-4 pb-2 border-b border-slate-100">
-                      04. סיכום כספי
-                    </h2>
+                    {/* Buy Hint Button */}
+                    <button
+                      type="button"
+                      disabled={gameState !== "PLAYING" || showHint}
+                      onClick={handleBuyHint}
+                      className="inline-flex items-center gap-1.5 px-4 py-3 text-xs font-semibold text-sky-300 bg-[#0F172A] border border-slate-700 rounded-xl hover:border-sky-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-40 disabled:cursor-default"
+                    >
+                      <HelpCircle className="w-4 h-4 text-sky-400" />
+                      <span>
+                        {showHint
+                          ? "רמז הוצג"
+                          : `רמז (${hintCost > 0 ? `-${hintCost} נק'` : "חינם"})`}
+                      </span>
+                    </button>
+                  </div>
+                </div>
 
-                    <div className="space-y-2.5 text-sm">
-                      <div className="flex items-center justify-between text-slate-600">
-                        <span>סה"כ לפני מע"מ:</span>
-                        {isEditing && editDraft ? (
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={editDraft.financials.subtotal}
-                            onChange={(e) =>
-                              setEditDraft({
-                                ...editDraft,
-                                financials: {
-                                  ...editDraft.financials,
-                                  subtotal: parseFloat(e.target.value) || 0,
-                                },
-                              })
-                            }
-                            className="w-32 px-2 py-1 border border-slate-300 rounded text-left font-mono-tabular"
-                          />
-                        ) : (
-                          <span className="font-mono-tabular tabular-nums font-medium text-slate-900">
-                            {currentData.financials.subtotal.toFixed(2)}{" "}
-                            {currentData.financials.currency}
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="flex items-center justify-between text-slate-600">
+                {/* Time-Decay Progress Bar (if enabled) */}
+                {isTimeDecayMode && gameState === "PLAYING" && (
+                  <div className="bg-[#0F172A] border border-slate-800 rounded-xl p-4 space-y-2">
+                    <div className="flex items-center justify-between text-xs tabular-nums">
+                      <span className="text-amber-300 font-semibold flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5" />
                         <span>
-                          מע"מ ({currentData.financials.vatRate || 18}%):
+                          שעון עצר ניקוד יורד: עברו {elapsedGuessTime.toFixed(1)}{" "}
+                          שניות מתוך {guessTimeLimitSeconds} שניות
                         </span>
-                        {isEditing && editDraft ? (
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={editDraft.financials.vatAmount}
-                            onChange={(e) =>
-                              setEditDraft({
-                                ...editDraft,
-                                financials: {
-                                  ...editDraft.financials,
-                                  vatAmount: parseFloat(e.target.value) || 0,
-                                },
-                              })
-                            }
-                            className="w-32 px-2 py-1 border border-slate-300 rounded text-left font-mono-tabular"
-                          />
-                        ) : (
-                          <span className="font-mono-tabular tabular-nums font-medium text-slate-900">
-                            {currentData.financials.vatAmount.toFixed(2)}{" "}
-                            {currentData.financials.currency}
-                          </span>
-                        )}
+                      </span>
+                      <span className="font-bold text-emerald-400">
+                        שווי תשובה נכונה ברגע זה: {currentPotentialPoints} נק&apos;
+                      </span>
+                    </div>
+                    <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-emerald-400 transition-transform duration-100 origin-right"
+                        style={{
+                          width: `${Math.max(
+                            0,
+                            Math.min(
+                              100,
+                              ((guessTimeLimitSeconds - elapsedGuessTime) /
+                                guessTimeLimitSeconds) *
+                                100
+                            )
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Optional Hint Reveal */}
+                {showHint && (
+                  <div className="bg-[#0F172A] border border-sky-800/70 rounded-xl px-4 py-3 text-sm text-sky-200 flex items-center justify-between">
+                    <span>
+                      <strong>רמז לקבוצה:</strong> {currentSong.hint} (שנת יציאה:{" "}
+                      {currentSong.year})
+                    </span>
+                    <span className="text-xs text-sky-400 tabular-nums">
+                      עלות רמז: -{hintCost} נק&apos;
+                    </span>
+                  </div>
+                )}
+
+                {/* Original Song Audio Player Deck */}
+                <div className="bg-[#0F172A] border border-slate-800 rounded-xl p-6 space-y-5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="space-y-1">
+                      <div className="text-xs text-slate-400">
+                        {gameState === "ROUND_SUMMARY"
+                          ? "אחרי הניחוש — מושמע כעת המשך השיר המקורי:"
+                          : `האזינו ל-${unlockedSeconds} השניות הראשונות של השיר המקורי:`}
+                      </div>
+                      <div className="text-lg font-bold text-white font-display flex items-center gap-2">
+                        <Volume2
+                          className={`w-5 h-5 ${
+                            isPlayingSnippet || isPlayingContinuation
+                              ? "text-amber-400"
+                              : "text-slate-400"
+                          }`}
+                        />
+                        <span>
+                          {isPlayingContinuation
+                            ? `מנגן את המשך השיר המקורי: ${currentSong.title} — ${currentSong.artist}`
+                            : isPlayingSnippet
+                            ? `משמיע כעת את השיר המקורי (${unlockedSeconds} שניות פתוחות)...`
+                            : `מוכן להשמעה (${unlockedSeconds} שניות ראשונות פתוחות)`}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <div className="font-mono-tabular text-sm font-bold text-amber-400 bg-[#1E293B] px-3.5 py-2 rounded-lg border border-slate-800">
+                        {playbackPositionSec.toFixed(1)}s /{" "}
+                        {gameState === "ROUND_SUMMARY"
+                          ? "המשך השיר"
+                          : `${unlockedSeconds.toFixed(1)}s`}
                       </div>
 
-                      <div className="flex items-center justify-between pt-3 border-t border-slate-200 text-base font-bold text-slate-900">
-                        <span>סה"כ לתשלום כולל מע"מ:</span>
-                        {isEditing && editDraft ? (
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={editDraft.financials.totalAmount}
-                            onChange={(e) =>
-                              setEditDraft({
-                                ...editDraft,
-                                financials: {
-                                  ...editDraft.financials,
-                                  totalAmount: parseFloat(e.target.value) || 0,
-                                },
-                              })
+                      {gameState === "PLAYING" ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              playSongSnippetRange(
+                                currentSong,
+                                0,
+                                unlockedSeconds
+                              )
                             }
-                            className="w-36 px-2 py-1 border border-slate-300 rounded text-left font-mono-tabular"
-                          />
-                        ) : (
-                          <span className="font-mono-tabular tabular-nums text-lg text-blue-800">
-                            {currentData.financials.totalAmount.toFixed(2)}{" "}
-                            {currentData.financials.currency}
-                          </span>
-                        )}
-                      </div>
-
-                      {(currentData.financials.amountInWords || isEditing) && (
-                        <div className="flex items-center justify-between pt-2 text-xs text-slate-500">
-                          <span>סכום במילים:</span>
-                          {isEditing && editDraft ? (
-                            <input
-                              type="text"
-                              value={editDraft.financials.amountInWords}
-                              onChange={(e) =>
-                                setEditDraft({
-                                  ...editDraft,
-                                  financials: {
-                                    ...editDraft.financials,
-                                    amountInWords: e.target.value,
-                                  },
-                                })
-                              }
-                              className="w-64 px-2 py-1 border border-slate-300 rounded text-xs"
-                            />
-                          ) : (
-                            <span className="font-medium text-slate-700">
-                              {currentData.financials.amountInWords}
+                            className="inline-flex items-center gap-2 px-4 py-2.5 text-xs sm:text-sm font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                          >
+                            <Play className="w-4 h-4 fill-current" />
+                            <span>
+                              השמע מההתחלה (0 - {unlockedSeconds} שנ&apos;)
                             </span>
+                          </button>
+
+                          {extraSecondsCount > 0 && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                playSongSnippetRange(
+                                  currentSong,
+                                  unlockedSeconds - EXTRA_TIME_STEP_SECONDS,
+                                  EXTRA_TIME_STEP_SECONDS
+                                )
+                              }
+                              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold text-amber-300 bg-[#1E293B] border border-slate-700 hover:border-amber-400 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                            >
+                              <FastForward className="w-3.5 h-3.5" />
+                              <span>
+                                השמע רק 5 שנ&apos; אחרונות (
+                                {unlockedSeconds - 5} - {unlockedSeconds})
+                              </span>
+                            </button>
+                          )}
+                        </>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          {isPlayingContinuation ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                soundEngine.stopSongPlayback();
+                                setIsPlayingContinuation(false);
+                                setSpectrumBars(new Array(24).fill(0.1));
+                              }}
+                              className="inline-flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold text-rose-300 bg-[#1E293B] border border-slate-700 hover:border-rose-400 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                            >
+                              <Square className="w-3.5 h-3.5 fill-current" />
+                              <span>עצור השמעת המשך השיר</span>
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                playContinuationAfterAnswer(
+                                  currentSong,
+                                  unlockedSeconds
+                                )
+                              }
+                              className="inline-flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold text-amber-300 bg-[#1E293B] border border-slate-700 hover:border-amber-400 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                            >
+                              <Play className="w-3.5 h-3.5 fill-current" />
+                              <span>נגן שוב את המשך השיר המקורי</span>
+                            </button>
                           )}
                         </div>
                       )}
                     </div>
-                  </section>
-
-                  {/* Section 5: נקודות עיקריות והערות נוספות */}
-                  <section className="bg-white border border-slate-200 rounded-lg p-6 space-y-4">
-                    <h2 className="text-base font-bold text-slate-900 pb-2 border-b border-slate-100">
-                      05. עיקרי הדברים והערות נוספות
-                    </h2>
-
-                    {currentData.keyPoints.length > 0 && (
-                      <ul className="space-y-2 text-sm text-slate-700 list-disc pr-4">
-                        {currentData.keyPoints.map((pt, i) => (
-                          <li key={i} className="leading-relaxed">
-                            {pt}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-
-                    {currentData.notesAndFlags.length > 0 && (
-                      <div className="pt-3 border-t border-slate-100 text-xs text-slate-500 space-y-1">
-                        <span className="font-semibold text-slate-700 block">
-                          דגשים והערות זיהוי:
-                        </span>
-                        {currentData.notesAndFlags.map((note, idx) => (
-                          <p key={idx}>{note}</p>
-                        ))}
-                      </div>
-                    )}
-                  </section>
-
-                  {/* Section 6: בירור אינטראקטיבי על המסמך */}
-                  <section className="bg-white border border-slate-200 rounded-lg p-6 space-y-4">
-                    <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                      <h2 className="text-base font-bold text-slate-900">
-                        06. בדיקה ובירור נוסף במסמך
-                      </h2>
-                      <span className="text-xs text-slate-500">
-                        שאל כל שאלה ספציפית על המסמך, ה-PDF או כתב היד
-                      </span>
-                    </div>
-
-                    <div className="flex flex-wrap gap-2">
-                      {[
-                        'האם חישוב המע"מ והסכום הכולל מדויקים?',
-                        "אילו מילים בכתב היד אינן חד-משמעיות?",
-                        "נסח הודעת סיכום קצרה לוואטסאפ של ועד הבית",
-                      ].map((suggestion) => (
-                        <button
-                          key={suggestion}
-                          type="button"
-                          onClick={() => handleAskQuestion(suggestion)}
-                          disabled={isAsking}
-                          className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-                        >
-                          {suggestion}
-                        </button>
-                      ))}
-                    </div>
-
-                    {activeDoc.qaHistory && activeDoc.qaHistory.length > 0 && (
-                      <div className="space-y-3 pt-2">
-                        {activeDoc.qaHistory.map((item, i) => (
-                          <div
-                            key={i}
-                            className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg text-sm space-y-1.5"
-                          >
-                            <div className="flex items-center justify-between text-xs text-slate-500">
-                              <span className="font-semibold text-slate-800">
-                                שאלה: {item.question}
-                              </span>
-                              <span className="font-mono-tabular tabular-nums">
-                                {item.timestamp}
-                              </span>
-                            </div>
-                            <p className="text-slate-700 leading-relaxed whitespace-pre-line">
-                              {item.answer}
-                            </p>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    <form
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        handleAskQuestion();
-                      }}
-                      className="flex items-center gap-2 pt-1"
-                    >
-                      <input
-                        type="text"
-                        value={questionInput}
-                        onChange={(e) => setQuestionInput(e.target.value)}
-                        placeholder="למשל: מה מספר הטלפון הנייד של הספק? האם קיימת חתימה?"
-                        className="flex-1 px-3.5 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:border-blue-600"
-                      />
-                      <button
-                        type="submit"
-                        disabled={isAsking || !questionInput.trim()}
-                        className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-                      >
-                        <Send className="w-3.5 h-3.5" />
-                        <span>{isAsking ? "בודק..." : "שאל"}</span>
-                      </button>
-                    </form>
-                  </section>
-                </div>
-
-                {/* Multi-Format Visual Document Inspector Column (5 cols, sticky on desktop) */}
-                <div className="xl:col-span-5 xl:sticky xl:top-24 bg-white border border-slate-200 rounded-lg overflow-hidden">
-                  {/* Inspector Toolbar */}
-                  <div className="flex items-center justify-between px-4 py-3 bg-slate-50 border-b border-slate-200">
-                    <span className="text-xs font-semibold text-slate-700">
-                      {isActiveDocPdf
-                        ? "תצוגת מסמך PDF"
-                        : isActiveDocText
-                        ? "תוכן קובץ המקור"
-                        : "תמונת המקור"}
-                    </span>
-
-                    {!isActiveDocPdf && !isActiveDocText && (
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setZoom((z) => Math.max(0.6, +(z - 0.2).toFixed(1)))
-                          }
-                          title="הקטן תצוגה"
-                          className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-200/70 rounded cursor-pointer"
-                        >
-                          <ZoomOut className="w-4 h-4" />
-                        </button>
-                        <span className="text-xs font-mono-tabular tabular-nums text-slate-600 px-1">
-                          {Math.round(zoom * 100)}%
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setZoom((z) => Math.min(2.4, +(z + 0.2).toFixed(1)))
-                          }
-                          title="הגדל תצוגה"
-                          className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-200/70 rounded cursor-pointer"
-                        >
-                          <ZoomIn className="w-4 h-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setRotation((r) => (r + 90) % 360)}
-                          title="סובב 90 מעלות"
-                          className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-200/70 rounded cursor-pointer"
-                        >
-                          <RotateCw className="w-4 h-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setHighContrastInk((v) => !v)}
-                          title="חידוד ניגודיות כתב יד"
-                          className={`flex items-center gap-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                            highContrastInk
-                              ? "bg-slate-900 text-white"
-                              : "text-slate-600 hover:bg-slate-200/70"
-                          }`}
-                        >
-                          <Sliders className="w-3.5 h-3.5" />
-                          <span>חידוד דיו</span>
-                        </button>
-                      </div>
-                    )}
                   </div>
 
-                  {/* Preview Canvas: PDF, Text/CSV, or Image */}
-                  {isActiveDocPdf ? (
-                    <div className="bg-slate-100 h-[640px] flex flex-col">
-                      <iframe
-                        src={activeDoc.imageUrl}
-                        title={activeDoc.title}
-                        className="w-full flex-1 border-0"
-                      />
-                    </div>
-                  ) : isActiveDocText ? (
-                    <div className="p-5 bg-slate-50 max-h-[640px] overflow-auto">
-                      <pre className="text-xs font-mono-tabular text-slate-800 whitespace-pre-wrap leading-relaxed">
-                        {activeDoc.textContent || "קובץ טקסט"}
-                      </pre>
-                    </div>
-                  ) : (
-                    <div className="p-4 bg-slate-100/80 overflow-auto max-h-[680px] flex items-center justify-center">
-                      <img
-                        src={activeDoc.imageUrl}
-                        alt={activeDoc.title}
-                        referrerPolicy="no-referrer"
-                        style={{
-                          transform: `scale(${zoom}) rotate(${rotation}deg)`,
-                          filter: highContrastInk
-                            ? "contrast(1.45) brightness(0.97) saturate(1.2)"
-                            : "none",
-                        }}
-                        className="max-w-full h-auto rounded shadow-xs transition-transform duration-150 origin-center"
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* View 2: Clean Formatted Hebrew Markdown Output */}
-          {activeView === "markdown" && activeDoc && (
-            <div className="max-w-3xl mx-auto space-y-6">
-              <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-200">
-                <div>
-                  <h1 className="text-xl font-bold text-slate-900 font-display">
-                    תצוגת דוח מובנה בעברית
-                  </h1>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    פורמט נקי, מסודר ומוכן להעתקה או לשליחה ישירה במייל עם קובץ
-                    המקור
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => openEmailModal(activeDoc)}
-                    className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  {/* 24-Bar Live Equalizer Visualizer */}
+                  <div
+                    aria-hidden="true"
+                    className="h-16 flex items-end justify-between gap-1.5 pt-2 px-2"
                   >
-                    <Mail className="w-3.5 h-3.5" />
-                    <span>שלח קובץ וניתוח במייל</span>
-                  </button>
-                  <button
-                    onClick={handleCopyMarkdown}
-                    className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    {copiedReport ? (
-                      <>
-                        <Check className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>הועתק!</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-3.5 h-3.5" />
-                        <span>העתק טקסט מעוצב</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              <div className="bg-white border border-slate-200 rounded-lg p-6 sm:p-8 space-y-6 text-sm leading-relaxed">
-                <p className="text-slate-600">
-                  להלן פענוח וריכוז הנתונים מתוך המסמך:
-                </p>
-
-                <hr className="border-slate-200" />
-
-                <div>
-                  <h3 className="text-base font-bold text-slate-900 mb-2">
-                    פרטי המסמך
-                  </h3>
-                  <ul className="list-disc pr-5 space-y-1 text-slate-800">
-                    <li>
-                      <strong>סוג המסמך:</strong> {activeDoc.data.documentType}
-                    </li>
-                    {activeDoc.data.documentNumber && (
-                      <li>
-                        <strong>מספר חשבונית / מסמך:</strong>{" "}
-                        <span className="font-mono-tabular tabular-nums">
-                          {activeDoc.data.documentNumber}
-                        </span>
-                      </li>
-                    )}
-                    <li>
-                      <strong>תאריך:</strong>{" "}
-                      <span className="font-mono-tabular tabular-nums">
-                        {activeDoc.data.date}
-                      </span>
-                    </li>
-                  </ul>
-                </div>
-
-                <hr className="border-slate-200" />
-
-                <div>
-                  <h3 className="text-base font-bold text-slate-900 mb-2">
-                    פרטי הספק / בית העסק
-                  </h3>
-                  <ul className="list-disc pr-5 space-y-1 text-slate-800">
-                    <li>
-                      <strong>שם העסק:</strong> {activeDoc.data.vendor.name}
-                    </li>
-                    {activeDoc.data.vendor.businessField && (
-                      <li>
-                        <strong>תחום עיסוק:</strong>{" "}
-                        {activeDoc.data.vendor.businessField}
-                      </li>
-                    )}
-                    {activeDoc.data.vendor.taxId && (
-                      <li>
-                        <strong>עוסק מורשה (ע"מ) / ח.פ:</strong>{" "}
-                        <span className="font-mono-tabular tabular-nums">
-                          {activeDoc.data.vendor.taxId}
-                        </span>
-                      </li>
-                    )}
-                    {activeDoc.data.vendor.address && (
-                      <li>
-                        <strong>כתובת:</strong> {activeDoc.data.vendor.address}
-                      </li>
-                    )}
-                    {(activeDoc.data.vendor.phone ||
-                      activeDoc.data.vendor.mobile) && (
-                      <li>
-                        <strong>טלפונים:</strong>{" "}
-                        <span className="font-mono-tabular tabular-nums">
-                          {[
-                            activeDoc.data.vendor.phone,
-                            activeDoc.data.vendor.mobile
-                              ? `נייד: ${activeDoc.data.vendor.mobile}`
-                              : "",
-                          ]
-                            .filter(Boolean)
-                            .join(" | ")}
-                        </span>
-                      </li>
-                    )}
-                  </ul>
-                </div>
-
-                <hr className="border-slate-200" />
-
-                <div>
-                  <h3 className="text-base font-bold text-slate-900 mb-2">
-                    פרטי הלקוח
-                  </h3>
-                  <ul className="list-disc pr-5 space-y-1 text-slate-800">
-                    <li>
-                      <strong>לכבוד:</strong>{" "}
-                      {activeDoc.data.customer.name || "—"}
-                    </li>
-                    <li>
-                      <strong>כתובת:</strong>{" "}
-                      {activeDoc.data.customer.address || "—"}
-                    </li>
-                  </ul>
-                </div>
-
-                <hr className="border-slate-200" />
-
-                <div>
-                  <h3 className="text-base font-bold text-slate-900 mb-3">
-                    פירוט השירות / פריטים
-                  </h3>
-                  <table className="w-full max-w-md border border-slate-200 text-sm">
-                    <thead className="bg-slate-50 border-b border-slate-200">
-                      <tr>
-                        <th className="py-2 px-3 text-right font-semibold">
-                          תיאור
-                        </th>
-                        <th className="py-2 px-3 text-right font-semibold">
-                          כמות
-                        </th>
-                        <th className="py-2 px-3 text-left font-semibold">
-                          סכום
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-200">
-                      {activeDoc.data.lineItems.map((it, idx) => (
-                        <tr key={idx}>
-                          <td className="py-2 px-3">{it.description}</td>
-                          <td className="py-2 px-3 font-mono-tabular tabular-nums">
-                            {it.quantity}
-                          </td>
-                          <td className="py-2 px-3 text-left font-mono-tabular tabular-nums">
-                            {it.total.toFixed(2)}{" "}
-                            {activeDoc.data.financials.currency}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                <hr className="border-slate-200" />
-
-                <div>
-                  <h3 className="text-base font-bold text-slate-900 mb-2">
-                    סיכום כספי
-                  </h3>
-                  <ul className="list-disc pr-5 space-y-1 text-slate-800">
-                    <li>
-                      <strong>סה"כ לפני מע"מ:</strong>{" "}
-                      <span className="font-mono-tabular tabular-nums">
-                        {activeDoc.data.financials.subtotal.toFixed(2)}{" "}
-                        {activeDoc.data.financials.currency}
-                      </span>
-                    </li>
-                    <li>
-                      <strong>
-                        מע"מ ({activeDoc.data.financials.vatRate || 18}%):
-                      </strong>{" "}
-                      <span className="font-mono-tabular tabular-nums">
-                        {activeDoc.data.financials.vatAmount.toFixed(2)}{" "}
-                        {activeDoc.data.financials.currency}
-                      </span>
-                    </li>
-                    <li>
-                      <strong>סה"כ לתשלום כולל מע"מ:</strong>{" "}
-                      <strong className="font-mono-tabular tabular-nums text-blue-800">
-                        {activeDoc.data.financials.totalAmount.toFixed(2)}{" "}
-                        {activeDoc.data.financials.currency}
-                      </strong>
-                    </li>
-                    {activeDoc.data.financials.amountInWords && (
-                      <li>
-                        <strong>סכום במילים:</strong>{" "}
-                        {activeDoc.data.financials.amountInWords}
-                      </li>
-                    )}
-                  </ul>
-                </div>
-
-                {activeDoc.data.notesAndFlags.length > 0 && (
-                  <>
-                    <hr className="border-slate-200" />
-                    <p className="text-slate-700">
-                      <strong>הערות נוספות:</strong>{" "}
-                      {activeDoc.data.notesAndFlags.join(" • ")}
-                    </p>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* View 3: High-Density Document Ledger Table */}
-          {activeView === "ledger" && (
-            <div className="space-y-6">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200">
-                <div>
-                  <h1 className="text-xl font-bold text-slate-900 font-display">
-                    יומן ריכוז מסמכים והוצאות
-                  </h1>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    טבלה מרוכזת של כלל המסמכים, קובצי ה-PDF, החשבוניות והפתקים
-                    שפוענחו במערכת
-                  </p>
-                </div>
-                <button
-                  onClick={exportAllToCsv}
-                  className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  <FileSpreadsheet className="w-3.5 h-3.5" />
-                  <span>הורד קובץ CSV לאקסל</span>
-                </button>
-              </div>
-
-              <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm border-collapse">
-                    <thead>
-                      <tr className="bg-slate-50 border-b border-slate-200 text-xs text-slate-500">
-                        <th className="py-3 px-4 text-right font-medium">
-                          סוג מסמך
-                        </th>
-                        <th className="py-3 px-4 text-right font-medium">
-                          מס' אסמכתא
-                        </th>
-                        <th className="py-3 px-4 text-right font-medium">
-                          תאריך
-                        </th>
-                        <th className="py-3 px-4 text-right font-medium">
-                          שם הספק / העסק
-                        </th>
-                        <th className="py-3 px-4 text-right font-medium">
-                          ע"מ / ח.פ
-                        </th>
-                        <th className="py-3 px-4 text-left font-medium">
-                          לפני מע"מ
-                        </th>
-                        <th className="py-3 px-4 text-left font-medium">
-                          מע"מ
-                        </th>
-                        <th className="py-3 px-4 text-left font-medium">
-                          סה"כ בש"ח
-                        </th>
-                        <th className="py-3 px-4 text-center font-medium">
-                          שליחה במייל
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {documents.map((doc) => (
-                        <tr
-                          key={doc.id}
-                          onClick={() => {
-                            setSelectedId(doc.id);
-                            setActiveView("workspace");
-                          }}
-                          className="hover:bg-slate-50 cursor-pointer transition-colors"
-                        >
-                          <td className="py-3 px-4 text-slate-700">
-                            {doc.data.documentType}
-                          </td>
-                          <td className="py-3 px-4 font-mono-tabular tabular-nums text-slate-800">
-                            {doc.data.documentNumber || "—"}
-                          </td>
-                          <td className="py-3 px-4 font-mono-tabular tabular-nums text-slate-700">
-                            {doc.data.date.split(" ")[0]}
-                          </td>
-                          <td className="py-3 px-4 font-semibold text-slate-900">
-                            {doc.data.vendor.name}
-                          </td>
-                          <td className="py-3 px-4 font-mono-tabular tabular-nums text-slate-600">
-                            {doc.data.vendor.taxId || "—"}
-                          </td>
-                          <td className="py-3 px-4 text-left font-mono-tabular tabular-nums text-slate-700">
-                            {doc.data.financials.subtotal.toFixed(2)}
-                          </td>
-                          <td className="py-3 px-4 text-left font-mono-tabular tabular-nums text-slate-700">
-                            {doc.data.financials.vatAmount.toFixed(2)}
-                          </td>
-                          <td className="py-3 px-4 text-left font-mono-tabular tabular-nums font-bold text-slate-900">
-                            {doc.data.financials.totalAmount.toFixed(2)} ₪
-                          </td>
-                          <td
-                            className="py-3 px-4 text-center"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openEmailModal(doc);
-                            }}
-                          >
-                            <button
-                              type="button"
-                              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md transition-colors cursor-pointer"
-                            >
-                              <Mail className="w-3.5 h-3.5" />
-                              <span>שלח במייל</span>
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          )}
-        </main>
-      </div>
-
-      {/* Send File & Full Analysis by Email Modal */}
-      {isEmailModalOpen && emailTargetDoc && (
-        <div className="fixed inset-0 z-50 bg-slate-950/70 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl max-w-2xl w-full overflow-hidden border border-slate-200 flex flex-col max-h-[90vh]">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 bg-slate-50/70">
-              <div className="flex items-center gap-2.5">
-                <Mail className="w-5 h-5 text-blue-700 shrink-0" />
-                <div>
-                  <h3 className="text-base font-bold text-slate-900 font-display">
-                    שליחת הקובץ והניתוח המלא במייל
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    {emailTargetDoc.title}
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsEmailModalOpen(false)}
-                className="p-1.5 text-slate-400 hover:text-slate-900 rounded cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {/* Modal Body */}
-            <div className="p-5 flex-1 overflow-y-auto space-y-5">
-              {emailError && (
-                <div className="p-3.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800 flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
-                    <span>{emailError}</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setEmailError(null)}
-                    className="underline font-medium cursor-pointer shrink-0"
-                  >
-                    סגור
-                  </button>
-                </div>
-              )}
-
-              {emailSuccessMsg && (
-                <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-900 flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                    <span className="font-semibold">{emailSuccessMsg}</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setIsEmailModalOpen(false)}
-                    className="px-3 py-1 bg-emerald-700 text-white rounded-md font-semibold hover:bg-emerald-800 cursor-pointer shrink-0"
-                  >
-                    סיום
-                  </button>
-                </div>
-              )}
-
-              {/* Step 1: Recipient input & Remembered Addresses (Used on top) */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <label className="block text-xs font-bold text-slate-900">
-                    כתובת מייל למשלוח (ניתן להוסיף מספר נמענים)
-                  </label>
-                  {googleUser?.email && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const myEmail = googleUser.email!.toLowerCase();
-                        upsertSavedEmails([myEmail], {
-                          label: "המייל שלי",
-                          markUsed: false,
-                        });
-                        if (!selectedRecipients.includes(myEmail)) {
-                          setSelectedRecipients((prev) => [...prev, myEmail]);
-                        }
-                      }}
-                      className="text-xs font-medium text-blue-700 hover:underline cursor-pointer"
-                    >
-                      + שלח לעצמי ({googleUser.email})
-                    </button>
-                  )}
-                </div>
-
-                {/* Selected Recipients List */}
-                {selectedRecipients.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-1.5 p-2.5 bg-blue-50/60 border border-blue-200 rounded-lg">
-                    <span className="text-xs font-semibold text-blue-900 ml-1">
-                      נמענים שנבחרו:
-                    </span>
-                    {selectedRecipients.map((addr) => {
-                      const savedInfo = savedEmails.find(
-                        (s) => s.email.toLowerCase() === addr.toLowerCase()
-                      );
+                    {spectrumBars.map((val, i) => {
+                      const active =
+                        isPlayingSnippet || isPlayingContinuation;
                       return (
-                        <span
-                          key={addr}
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium bg-white text-slate-900 border border-blue-300 rounded-md"
-                        >
-                          <span className="font-mono-tabular">{addr}</span>
-                          {savedInfo?.label && (
-                            <span className="text-slate-500">
-                              ({savedInfo.label})
-                            </span>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => toggleRecipientEmail(addr)}
-                            className="text-slate-400 hover:text-red-600 cursor-pointer"
-                            title="הסר מרשימת הנמענים הנוכחית"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                          </button>
-                        </span>
+                        <div
+                          key={i}
+                          className={`flex-1 rounded-t transition-transform duration-75 origin-bottom ${
+                            isPlayingContinuation
+                              ? "bg-emerald-400"
+                              : "bg-amber-400"
+                          }`}
+                          style={{
+                            height: "100%",
+                            transform: `scaleY(${active ? val : 0.12})`,
+                            opacity: active ? 0.9 : 0.25,
+                          }}
+                        />
                       );
                     })}
                   </div>
-                )}
 
-                {/* Input to write new email address */}
-                <div className="flex flex-col sm:flex-row gap-2">
-                  <input
-                    type="email"
-                    dir="ltr"
-                    value={emailInput}
-                    onChange={(e) => setEmailInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === ",") {
-                        e.preventDefault();
-                        handleAddEmailFromInput();
-                      }
-                    }}
-                    placeholder="name@example.com"
-                    className="flex-1 px-3 py-2 text-xs font-mono-tabular text-left bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600"
-                  />
-                  <input
-                    type="text"
-                    value={emailLabelInput}
-                    onChange={(e) => setEmailLabelInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        handleAddEmailFromInput();
-                      }
-                    }}
-                    placeholder="כינוי אופציונלי (למשל: רו״ח / ועד הבית)"
-                    className="sm:w-52 px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleAddEmailFromInput}
-                    className="px-3.5 py-2 text-xs font-semibold text-slate-800 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    הוסף וזכור כתובת
-                  </button>
-                </div>
+                  {/* Progress Bar */}
+                  <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full transition-transform duration-75 origin-right ${
+                        isPlayingContinuation
+                          ? "bg-emerald-400"
+                          : "bg-amber-400"
+                      }`}
+                      style={{
+                        width: `${Math.min(
+                          100,
+                          (playbackPositionSec /
+                            (gameState === "ROUND_SUMMARY"
+                              ? unlockedSeconds + 18
+                              : unlockedSeconds)) *
+                            100
+                        )}%`,
+                      }}
+                    />
+                  </div>
 
-                {/* Saved / Remembered Email Addresses List (Used addresses sorted on top!) */}
-                {sortedSavedEmails.length > 0 && (
-                  <div className="border border-slate-200 rounded-lg overflow-hidden bg-slate-50/50">
-                    <div className="px-3.5 py-2 bg-slate-100 border-b border-slate-200 flex items-center justify-between text-xs">
-                      <span className="font-semibold text-slate-800 flex items-center gap-1.5">
-                        <Clock className="w-3.5 h-3.5 text-blue-700" />
-                        <span>
-                          כתובות שמורות לבחירה מהירה (אלו שהיו בשימוש מופיעות
-                          למעלה)
+                  <div className="flex items-center justify-between text-xs text-slate-400 tabular-nums">
+                    <span>0.0 שניות (תחילת השיר המקורי)</span>
+                    <span>
+                      {audioSourceMode === "real_audio"
+                        ? "מקור: הקלטת השיר המקורי (Original Master Preview)"
+                        : "מקור: עיבוד אולפן מובנה"}
+                    </span>
+                    <span>
+                      {gameState === "ROUND_SUMMARY"
+                        ? "משמיע את המשך השיר המקורי"
+                        : `${unlockedSeconds.toFixed(1)} שניות פתוחות`}
+                    </span>
+                  </div>
+
+                  {/* Live In-Game SoundEngine Mixer: Boost Original Song vs. Accompaniment */}
+                  <div className="pt-4 border-t border-slate-800/90 grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
+                    <div className="md:col-span-5 bg-[#1E293B] border border-slate-800 rounded-lg px-3.5 py-2.5 space-y-1.5">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-white flex items-center gap-1.5">
+                          <Volume2 className="w-3.5 h-3.5 text-amber-400" />
+                          <span>הגברת השיר המקורי (Boost):</span>
                         </span>
-                      </span>
-                      <span className="text-slate-500">
-                        {sortedSavedEmails.length} כתובות שמורות
-                      </span>
+                        <span className="font-mono-tabular font-bold text-amber-400">
+                          {Math.round(originalSongVolume * 100)}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0.2}
+                        max={2.5}
+                        step={0.05}
+                        value={originalSongVolume}
+                        onChange={(e) =>
+                          handleOriginalSongVolumeChange(Number(e.target.value))
+                        }
+                        aria-label="הגברת השיר המקורי"
+                        className="w-full accent-amber-400 cursor-pointer"
+                      />
                     </div>
 
-                    <div className="max-h-44 overflow-y-auto divide-y divide-slate-100">
-                      {sortedSavedEmails.map((item) => {
-                        const isSelected = selectedRecipients.includes(
-                          item.email.toLowerCase()
-                        );
-                        const wasUsed = item.useCount > 0;
-                        return (
-                          <div
-                            key={item.email}
-                            onClick={() => toggleRecipientEmail(item.email)}
-                            className={`px-3.5 py-2.5 flex items-center justify-between gap-3 text-xs cursor-pointer transition-colors ${
-                              isSelected
-                                ? "bg-blue-50/90 text-blue-950"
-                                : "bg-white hover:bg-slate-50 text-slate-800"
-                            }`}
-                          >
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <input
-                                type="checkbox"
-                                checked={isSelected}
-                                onChange={() => {}}
-                                className="rounded border-slate-300 text-blue-700 focus:ring-blue-600 cursor-pointer"
-                              />
-                              <div className="min-w-0">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <span
-                                    dir="ltr"
-                                    className="font-mono-tabular font-semibold text-slate-900 truncate"
-                                  >
-                                    {item.email}
-                                  </span>
-                                  {item.label && (
-                                    <span className="text-slate-600 font-medium">
-                                      · {item.label}
-                                    </span>
-                                  )}
-                                </div>
+                    <div className="md:col-span-4 bg-[#1E293B] border border-slate-800 rounded-lg px-3.5 py-2.5 space-y-1.5">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-slate-300">
+                          עוצמת הליווי ברקע:
+                        </span>
+                        <span className="font-mono-tabular font-bold text-sky-400">
+                          {Math.round(accompanimentVolume * 100)}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={1.5}
+                        step={0.05}
+                        value={accompanimentVolume}
+                        onChange={(e) =>
+                          handleAccompanimentVolumeChange(
+                            Number(e.target.value)
+                          )
+                        }
+                        aria-label="עוצמת הליווי ברקע"
+                        className="w-full accent-sky-400 cursor-pointer"
+                      />
+                    </div>
+
+                    <div className="md:col-span-3 flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleOriginalSongVolumeChange(2.2);
+                          handleAccompanimentVolumeChange(0.25);
+                        }}
+                        className="w-full py-2.5 px-3 text-xs font-bold text-amber-300 bg-[#1E293B] border border-amber-500/60 hover:bg-amber-950/40 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                      >
+                        הדגש שיר מקורי (+220%)
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 4 Multiple-Choice Options Grid */}
+                <div className="space-y-3">
+                  <div className="text-xs font-semibold text-slate-400">
+                    בחרו את השיר הנכון מתוך 4 האפשרויות:
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {currentChoices.map((option, idx) => {
+                      const isSelected = selectedChoiceId === option.id;
+                      const isCorrectOption = option.id === currentSong.id;
+                      const showResult = gameState === "ROUND_SUMMARY";
+
+                      let cardStyle =
+                        "bg-[#0F172A] border-slate-800 hover:border-amber-400/80 text-white";
+                      if (showResult) {
+                        if (isCorrectOption) {
+                          cardStyle =
+                            "bg-emerald-950/60 border-emerald-500 text-emerald-100";
+                        } else if (isSelected && !isCorrectOption) {
+                          cardStyle =
+                            "bg-rose-950/60 border-rose-500 text-rose-100";
+                        } else {
+                          cardStyle =
+                            "bg-[#0F172A] border-slate-800 opacity-50 text-slate-400";
+                        }
+                      }
+
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          disabled={gameState !== "PLAYING"}
+                          onClick={() => handleSelectOption(option)}
+                          className={`w-full text-right p-5 rounded-xl border-2 transition-all flex items-center justify-between gap-4 cursor-pointer disabled:cursor-default ${cardStyle}`}
+                        >
+                          <div className="flex items-center gap-4 min-w-0">
+                            <span className="w-10 h-10 rounded-lg bg-[#1E293B] border border-slate-700 flex items-center justify-center font-bold text-base text-amber-400 shrink-0">
+                              {optionLetters[idx]}
+                            </span>
+                            <div className="min-w-0">
+                              <div className="font-bold text-lg truncate">
+                                {option.title}
+                              </div>
+                              <div className="text-sm text-slate-400 truncate">
+                                {option.artist}
                               </div>
                             </div>
-
-                            <div className="flex items-center gap-2.5 shrink-0">
-                              {wasUsed ? (
-                                <span className="text-[11px] font-medium text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded">
-                                  היה בשימוש ({item.useCount})
-                                </span>
-                              ) : (
-                                <span className="text-[11px] text-slate-500">
-                                  נשמר
-                                </span>
-                              )}
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  removeSavedEmailAddress(item.email);
-                                }}
-                                title="מחק כתובת מהזיכרון"
-                                className="p-1 text-slate-400 hover:text-red-600 rounded cursor-pointer"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
                           </div>
-                        );
-                      })}
+
+                          {showResult && isCorrectOption && (
+                            <div className="flex items-center gap-1.5 text-emerald-400 font-bold text-xs shrink-0">
+                              <CheckCircle2 className="w-5 h-5" />
+                              <span>תשובה נכונה</span>
+                            </div>
+                          )}
+
+                          {showResult && isSelected && !isCorrectOption && (
+                            <div className="flex items-center gap-1.5 text-rose-400 font-bold text-xs shrink-0">
+                              <XCircle className="w-5 h-5" />
+                              <span>תשובה שגויה</span>
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Round Result Feedback + Song Continuation Banner & Next Turn CTA */}
+                {gameState === "ROUND_SUMMARY" && (
+                  <div
+                    className={`rounded-xl p-5 border flex flex-col lg:flex-row lg:items-center justify-between gap-4 ${
+                      isAnswerCorrect
+                        ? "bg-emerald-950/40 border-emerald-700/80"
+                        : "bg-rose-950/40 border-rose-700/80"
+                    }`}
+                  >
+                    <div className="flex items-start sm:items-center gap-4">
+                      {currentArtworkUrl && (
+                        <img
+                          src={currentArtworkUrl}
+                          alt={currentSong.title}
+                          referrerPolicy="no-referrer"
+                          className="w-16 h-16 rounded-lg object-cover border border-slate-700 shrink-0 hidden sm:block"
+                        />
+                      )}
+                      {isAnswerCorrect ? (
+                        <CheckCircle2 className="w-7 h-7 text-emerald-400 shrink-0" />
+                      ) : (
+                        <XCircle className="w-7 h-7 text-rose-400 shrink-0" />
+                      )}
+                      <div>
+                        <div className="font-bold text-lg text-white">
+                          {isAnswerCorrect
+                            ? `כל הכבוד ${activeTeam.name}! זיהוי מדויק (+${lastAwardedPoints} נקודות)`
+                            : selectedChoiceId === "TIMEOUT"
+                            ? `נגמר הזמן לניחוש עבור ${activeTeam.name}! (0 נקודות)`
+                            : `טעות של ${activeTeam.name}! לא נוספו נקודות בתור זה`}
+                        </div>
+                        <div className="text-sm text-slate-300 mt-0.5">
+                          השיר המקורי מתנגן כעת:{" "}
+                          <strong className="text-white">
+                            {currentSong.title} — {currentSong.artist}
+                          </strong>{" "}
+                          · סה&quot;כ ניקוד {activeTeam.name}:{" "}
+                          <strong className="text-amber-400 tabular-nums">
+                            {activeTeam.score} נק&apos;
+                          </strong>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3 self-end lg:self-center">
+                      <button
+                        type="button"
+                        onClick={advanceToNextTeamTurn}
+                        className="inline-flex items-center gap-2 px-6 py-3 text-sm font-extrabold text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-xl transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                      >
+                        <span>
+                          {isLastTurnOfGame
+                            ? "לסיום המשחק והכרזת המנצחת!"
+                            : `לתור הבא: ${nextTeam.name}`}
+                        </span>
+                        <ArrowLeft className="w-4 h-4" />
+                      </button>
                     </div>
                   </div>
                 )}
               </div>
-
-              {/* Step 2: Email Subject, Personal Note, and Attachments Config */}
-              <div className="space-y-3 pt-2 border-t border-slate-200">
-                <div>
-                  <label className="block text-xs font-bold text-slate-900 mb-1">
-                    נושא המייל
-                  </label>
-                  <input
-                    type="text"
-                    value={emailSubject}
-                    onChange={(e) => setEmailSubject(e.target.value)}
-                    className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-900 mb-1">
-                    הערה אישית בראש המייל (אופציונלי)
-                  </label>
-                  <textarea
-                    rows={2}
-                    value={emailPersonalNote}
-                    onChange={(e) => setEmailPersonalNote(e.target.value)}
-                    placeholder="למשל: שלום, מצורפת החשבונית והניתוח המלא שלה עבור הנהלת חשבונות..."
-                    className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600"
-                  />
-                </div>
-
-                {/* Attachments Selection */}
-                <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg space-y-2.5">
-                  <div className="flex items-center gap-1.5 text-xs font-bold text-slate-900">
-                    <Paperclip className="w-3.5 h-3.5 text-blue-700" />
-                    <span>תכולת המייל והקבצים המצורפים:</span>
-                  </div>
-
-                  <label className="flex items-center gap-2 text-xs text-slate-800 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={attachOriginalFile}
-                      onChange={(e) => setAttachOriginalFile(e.target.checked)}
-                      className="rounded border-slate-300 text-blue-700"
-                    />
-                    <span>
-                      <strong>צרף את קובץ המקור</strong> (PDF / תמונת המסמך /
-                      קובץ טקסט) כקובץ מצורף למייל
-                    </span>
-                  </label>
-
-                  <label className="flex items-center gap-2 text-xs text-slate-800 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={attachAnalysisReport}
-                      onChange={(e) =>
-                        setAttachAnalysisReport(e.target.checked)
-                      }
-                      className="rounded border-slate-300 text-blue-700"
-                    />
-                    <span>
-                      <strong>צרף קובץ דוח ניתוח (.md)</strong> בנוסף לטבלת
-                      הניתוח המלאה שמופיעה בגוף המייל
-                    </span>
-                  </label>
-                </div>
-              </div>
-
-              {/* Google Account Auth Status for Direct Gmail Sending */}
-              <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="space-y-0.5">
-                  <p className="text-xs font-bold text-slate-900">
-                    שליחה ישירה עם קבצים מצורפים דרך Gmail
-                  </p>
-                  <p className="text-xs text-slate-600">
-                    {needsAuth
-                      ? "התחבר לחשבון Google שלך כדי לשלוח את המייל יחד עם הקובץ המצורף ישירות מהמערכת."
-                      : `מחובר לחשבון Google (${
-                          googleUser?.email || "פעיל"
-                        }) — מוכן לשליחה עם קבצים מצורפים.`}
-                  </p>
-                </div>
-                {needsAuth ? (
-                  <div className="shrink-0">
-                    <OfficialGoogleSignInButton
-                      onClick={handleGoogleLogin}
-                      disabled={isLoggingIn}
-                      label={isLoggingIn ? "מתחבר..." : "Sign in with Google"}
-                    />
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleGoogleLogin}
-                    disabled={isLoggingIn}
-                    className="text-xs text-blue-700 hover:underline whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    החלף חשבון / רענן הרשאה
-                  </button>
-                )}
-              </div>
-
-              {/* Mandatory User Confirmation Dialog before sending email via Workspace API */}
-              {isConfirmingEmailSend && (
-                <div className="p-4 bg-amber-50 border border-amber-300 rounded-lg space-y-3">
-                  <div className="space-y-1">
-                    <h4 className="text-xs font-bold text-amber-950">
-                      אישור שליחת מייל מחשבונך ({googleUser?.email || "Gmail"})
-                    </h4>
-                    <p className="text-xs text-amber-900 leading-relaxed">
-                      האם ברצונך לאשר שליחת הודעת אימייל עם ניתוח המסמך{" "}
-                      {attachOriginalFile ? "וקובץ המקור המצורף " : ""}אל{" "}
-                      <strong dir="ltr" className="font-mono-tabular">
-                        {selectedRecipients.join(", ")}
-                      </strong>{" "}
-                      בנושא <strong>"{emailSubject}"</strong>?
-                    </p>
-                  </div>
-                  <div className="flex items-center justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setIsConfirmingEmailSend(false)}
-                      disabled={isSendingEmail}
-                      className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-100 cursor-pointer"
-                    >
-                      ביטול
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleConfirmAndSendEmail}
-                      disabled={isSendingEmail}
-                      className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-md cursor-pointer disabled:opacity-50"
-                    >
-                      <Send className="w-3.5 h-3.5" />
-                      <span>
-                        {isSendingEmail
-                          ? "שולח מייל וקבצים..."
-                          : "אשר ושלח מייל כעת"}
-                      </span>
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
+          )}
 
-            {/* Modal Footer */}
-            <div className="px-5 py-3.5 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2">
-              <button
-                type="button"
-                onClick={handleSendViaMailtoClient}
-                className="text-xs font-medium text-slate-600 hover:text-slate-900 underline cursor-pointer"
-              >
-                פתיחה בתוכנת המייל במכשיר (ללא צירוף אוטומטי)
-              </button>
+        {/* TAB: ARENA — GAME OVER / VICTORY SCREEN */}
+        {activeTab === "arena" && gameState === "GAME_OVER" && winnerTeam && (
+          <div className="space-y-8">
+            <div className="bg-[#1E293B] border-2 border-amber-400 rounded-2xl p-8 sm:p-10 text-center space-y-6">
+              <div className="w-16 h-16 rounded-2xl bg-amber-400/20 border border-amber-400/50 flex items-center justify-center mx-auto">
+                <Trophy className="w-9 h-9 text-amber-400" />
+              </div>
 
-              <div className="flex items-center gap-2">
+              <div className="space-y-2">
+                <div className="text-xs font-semibold text-amber-400 tabular-nums">
+                  סיום {totalRounds} סיבובים · המשחק הוכרע!
+                </div>
+                <h1 className="text-3xl sm:text-5xl font-extrabold font-display text-white">
+                  המנצחת הגדולה: {winnerTeam.name}!
+                </h1>
+                <p className="text-slate-300 text-base sm:text-lg max-w-xl mx-auto">
+                  {winnerTeam.name} סיימה במקום הראשון עם{" "}
+                  <strong className="text-amber-400 tabular-nums">
+                    {winnerTeam.score} נקודות
+                  </strong>{" "}
+                  ו-{winnerTeam.correctCount} זיהויים נכונים!
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
                 <button
                   type="button"
-                  onClick={() => setIsEmailModalOpen(false)}
-                  className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-100 cursor-pointer"
+                  onClick={() => soundEngine.playVictorySound()}
+                  className="inline-flex items-center gap-2 px-5 py-3 text-sm font-bold text-amber-300 bg-[#0F172A] border border-amber-500/60 rounded-xl hover:bg-amber-950/40 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                 >
-                  סגור
+                  <Volume2 className="w-4 h-4 text-amber-400" />
+                  <span>השמע שוב צליל ניצחון לזוכה</span>
                 </button>
-                {!isConfirmingEmailSend && (
-                  <button
-                    type="button"
-                    onClick={handleRequestEmailConfirmation}
-                    disabled={needsAuth || isSendingEmail}
-                    className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
-                  >
-                    <Mail className="w-3.5 h-3.5" />
-                    <span>המשך לאישור ושליחה ב-Gmail</span>
-                  </button>
-                )}
+
+                <button
+                  type="button"
+                  onClick={startNewGame}
+                  className="inline-flex items-center gap-2 px-6 py-3 text-sm font-extrabold text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-xl transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  <span>משחק חדש עם שירים חדשים</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundEngine.stopSongPlayback();
+                    setGameState("TITLE_MENU");
+                  }}
+                  className="inline-flex items-center gap-2 px-5 py-3 text-sm font-semibold text-slate-200 bg-[#0F172A] border border-slate-700 rounded-xl hover:border-slate-500 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <Users className="w-4 h-4" />
+                  <span>שינוי הגדרות וקבוצות</span>
+                </button>
               </div>
             </div>
-          </div>
-        </div>
-      )}
 
-      {/* Google Drive File Browser Modal */}
-      {isDriveModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/70 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl max-w-2xl w-full overflow-hidden border border-slate-200 flex flex-col max-h-[85vh]">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
-              <div className="flex items-center gap-2.5">
-                <FolderOpen className="w-5 h-5 text-blue-600" />
-                <div>
-                  <h3 className="text-base font-bold text-slate-900 font-display">
-                    ייבוא מסמכים וקבצים מ-Google Drive
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    בחר קובץ PDF, מסמך Google Docs / Sheets, טקסט או תמונת קבלה
-                    לפענוח מיידי
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setIsDriveModalOpen(false)}
-                className="p-1.5 text-slate-400 hover:text-slate-900 rounded cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {/* Modal Body */}
-            <div className="p-5 flex-1 overflow-y-auto space-y-4">
-              {driveError && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800 flex items-center justify-between">
-                  <span>{driveError}</span>
-                  <button
-                    onClick={() => setDriveError(null)}
-                    className="underline font-medium cursor-pointer"
-                  >
-                    סגור
-                  </button>
-                </div>
-              )}
-
-              {needsAuth ? (
-                <div className="py-10 px-4 text-center space-y-4">
-                  <div className="max-w-md mx-auto space-y-2">
-                    <h4 className="text-base font-bold text-slate-900">
-                      חיבור לחשבון Google Drive
-                    </h4>
-                    <p className="text-xs text-slate-600 leading-relaxed">
-                      התחבר לחשבון Google שלך כדי לדפדף בקובצי ה-Drive שלך
-                      (PDF, חשבוניות, מסמכים ותמונות) ולייבא אותם ישירות לפענוח.
-                    </p>
-                  </div>
-                  <div className="flex justify-center pt-2">
-                    <OfficialGoogleSignInButton
-                      onClick={handleGoogleLogin}
-                      disabled={isLoggingIn}
-                      label={
-                        isLoggingIn ? "מתחבר..." : "Sign in with Google"
-                      }
-                    />
-                  </div>
-                </div>
-              ) : (
-                <>
-                  {/* Connected User Bar + Search + Filter */}
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100 text-xs text-slate-600">
-                    <div>
-                      <span>מחובר כ-</span>
-                      <strong className="text-slate-900 mx-1">
-                        {googleUser?.email || googleUser?.displayName || "משתמש Google"}
-                      </strong>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleGoogleLogout}
-                      className="flex items-center gap-1 text-slate-500 hover:text-red-600 cursor-pointer self-start sm:self-auto"
-                    >
-                      <LogOut className="w-3.5 h-3.5" />
-                      <span>התנתק מחשבון Google</span>
-                    </button>
-                  </div>
-
-                  {/* Search & Filter Controls */}
-                  <div className="flex flex-col sm:flex-row gap-2.5">
-                    <form
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        fetchDriveFilesList(driveSearch, driveFilter);
-                      }}
-                      className="flex-1 flex gap-2"
-                    >
-                      <input
-                        type="text"
-                        value={driveSearch}
-                        onChange={(e) => setDriveSearch(e.target.value)}
-                        placeholder="חפש קובץ ב-Google Drive לפי שם..."
-                        className="flex-1 px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-md focus:outline-none focus:bg-white focus:border-blue-600"
-                      />
-                      <button
-                        type="submit"
-                        disabled={isLoadingDrive}
-                        className="px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 rounded-md hover:bg-slate-800 whitespace-nowrap shrink-0 cursor-pointer"
+            {/* Final Standings & Round History Breakdown */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              <div className="lg:col-span-5 bg-[#1E293B] border border-slate-800 rounded-xl p-6 space-y-4">
+                <h2 className="text-lg font-bold font-display text-white">
+                  טבלת דירוג סופית
+                </h2>
+                <div className="space-y-3">
+                  {[...teams]
+                    .sort((a, b) => b.score - a.score)
+                    .map((team, rankIdx) => (
+                      <div
+                        key={team.id}
+                        className="flex items-center justify-between p-3.5 rounded-lg bg-[#0F172A] border border-slate-800"
                       >
-                        חפש
-                      </button>
-                    </form>
-
-                    {/* Segmented File Type Filter */}
-                    <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
-                      {(
-                        [
-                          { id: "all", label: "הכל" },
-                          { id: "pdf", label: "PDF" },
-                          { id: "docs", label: "מסמכים" },
-                          { id: "image", label: "תמונות" },
-                        ] as const
-                      ).map((tab) => (
-                        <button
-                          key={tab.id}
-                          type="button"
-                          onClick={() => {
-                            setDriveFilter(tab.id);
-                            fetchDriveFilesList(driveSearch, tab.id);
-                          }}
-                          className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                            driveFilter === tab.id
-                              ? "bg-white text-slate-900 shadow-xs"
-                              : "text-slate-600 hover:text-slate-900"
-                          }`}
-                        >
-                          {tab.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Files List */}
-                  {isLoadingDrive ? (
-                    <div className="py-12 text-center space-y-2">
-                      <RefreshCw className="w-5 h-5 text-blue-600 animate-spin mx-auto" />
-                      <p className="text-xs text-slate-500">
-                        טוען קבצים מ-Google Drive...
-                      </p>
-                    </div>
-                  ) : driveFiles.length === 0 ? (
-                    <div className="py-10 text-center space-y-2">
-                      <p className="text-sm font-medium text-slate-700">
-                        לא נמצאו קבצים תואמים ב-Google Drive
-                      </p>
-                      <p className="text-xs text-slate-500">
-                        נסה לשנות את מילות החיפוש או לבחור סינון אחר.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden">
-                      {driveFiles.map((file) => {
-                        const isImporting = importingFileId === file.id;
-                        const isPdf = file.mimeType === "application/pdf";
-                        const isDoc =
-                          file.mimeType.includes("google-apps") ||
-                          file.mimeType.startsWith("text/");
-                        const typeLabel = isPdf
-                          ? "PDF"
-                          : isDoc
-                          ? "מסמך / נתונים"
-                          : "תמונה";
-
-                        return (
-                          <div
-                            key={file.id}
-                            className="p-3.5 bg-white hover:bg-slate-50 flex items-center justify-between gap-3 transition-colors"
-                          >
-                            <div className="flex items-center gap-3 min-w-0">
-                              {isPdf ? (
-                                <FileText className="w-4 h-4 text-red-600 shrink-0" />
-                              ) : (
-                                <File className="w-4 h-4 text-blue-600 shrink-0" />
-                              )}
-                              <div className="min-w-0">
-                                <p className="text-sm font-semibold text-slate-900 truncate">
-                                  {file.name}
-                                </p>
-                                <div className="flex items-center gap-1.5 text-xs text-slate-500">
-                                  <span>{typeLabel}</span>
-                                  {file.modifiedTime && (
-                                    <>
-                                      <span aria-hidden="true">·</span>
-                                      <span className="font-mono-tabular tabular-nums">
-                                        {new Date(
-                                          file.modifiedTime
-                                        ).toLocaleDateString("he-IL")}
-                                      </span>
-                                    </>
-                                  )}
-                                </div>
-                              </div>
+                        <div className="flex items-center gap-3">
+                          <span className="w-7 h-7 rounded-md bg-slate-800 text-amber-400 font-mono-tabular font-bold text-xs flex items-center justify-center">
+                            #{rankIdx + 1}
+                          </span>
+                          <div>
+                            <div className="font-bold text-white text-sm">
+                              {team.name}
                             </div>
-
-                            <button
-                              type="button"
-                              onClick={() => handleSelectDriveFile(file)}
-                              disabled={Boolean(importingFileId)}
-                              className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-                            >
-                              {isImporting ? "מייבא ומפענח..." : "ייבא ופענח"}
-                            </button>
+                            <div className="text-xs text-slate-400 tabular-nums">
+                              {team.correctCount} תשובות נכונות ·{" "}
+                              {team.wrongCount} שגויות
+                            </div>
                           </div>
-                        );
-                      })}
+                        </div>
+
+                        <div className="font-mono-tabular font-extrabold text-lg text-amber-400">
+                          {team.score} נק&apos;
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
+
+              <div className="lg:col-span-7 bg-[#1E293B] border border-slate-800 rounded-xl p-6 space-y-4">
+                <h2 className="text-lg font-bold font-display text-white">
+                  סיכום התורות והשירים שהושמעו
+                </h2>
+                <div className="space-y-2.5 max-h-[340px] overflow-y-auto pl-1">
+                  {roundHistory.map((item) => (
+                    <div
+                      key={item.turnId}
+                      className="flex items-center justify-between gap-4 p-3 rounded-lg bg-[#0F172A] border border-slate-800 text-xs"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        {item.isCorrect ? (
+                          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                        ) : (
+                          <XCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                        )}
+                        <div className="truncate">
+                          <span className="font-bold text-white">
+                            סיבוב {item.roundNumber} ({item.teamName}):
+                          </span>{" "}
+                          <span className="text-slate-300">
+                            {item.songTitle} — {item.songArtist}
+                          </span>
+                        </div>
+                      </div>
+                      <span
+                        className={`font-semibold shrink-0 tabular-nums ${
+                          item.isCorrect ? "text-emerald-400" : "text-rose-400"
+                        }`}
+                      >
+                        {item.isCorrect
+                          ? `+${item.pointsAwarded} נקודות`
+                          : "0 נקודות"}
+                      </span>
                     </div>
-                  )}
-                </>
-              )}
-            </div>
-
-            {/* Modal Footer */}
-            <div className="px-5 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
-              <span className="text-xs text-slate-500">
-                גישה לקריאה בלבד באישור המשתמש
-              </span>
-              <button
-                type="button"
-                onClick={() => setIsDriveModalOpen(false)}
-                className="px-4 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-100 cursor-pointer"
-              >
-                סגור
-              </button>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
-        </div>
-      )}
-
-      {/* Camera Modal */}
-      {isCameraOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/75 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl max-w-lg w-full overflow-hidden border border-slate-200">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
-              <h3 className="text-sm font-bold text-slate-900">
-                צילום מסמך לפענוח
-              </h3>
-              <button
-                onClick={closeCamera}
-                className="p-1 text-slate-500 hover:text-slate-900 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="p-4 bg-black flex items-center justify-center">
-              <video
-                ref={videoRef}
-                autoPlay
-                playsInline
-                className="w-full max-h-[380px] object-contain rounded"
-              />
-            </div>
-            <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2">
-              <button
-                onClick={closeCamera}
-                className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-100 cursor-pointer"
-              >
-                ביטול
-              </button>
-              <button
-                onClick={captureCameraPhoto}
-                className="px-4 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 cursor-pointer"
-              >
-                צלם ופענח כעת
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+        )}
+      </main>
     </div>
   );
 }

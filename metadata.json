@@ -1,9 +1,7 @@
 {
-  "name": "Remix DocuLens IL — מפענח מסמכים ותמונות חכם",
-  "description": "מערכת מומחה לניתוח ופענוח מסמכים, חשבוניות, קבלות, פתקים ותפריטים מתוך תמונות להצגה מובנית וברורה בעברית.",
-  "requestFramePermissions": [
-    "camera"
-  ],
+  "name": "BeatQuiz — משחק זיהוי שירים לקבוצות",
+  "description": "משחק טריוויה מוזיקלי לקבוצות: האזינו ל-5 השניות הראשונות של השיר המקורי, בחרו מתוך 4 אפשרויות וצברו נקודות לניצחון.",
+  "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]
