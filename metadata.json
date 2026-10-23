@@ -1,0 +1,10 @@
+{
+  "name": "Remix DocuLens IL — מפענח מסמכים ותמונות חכם",
+  "description": "מערכת מומחה לניתוח ופענוח מסמכים, חשבוניות, קבלות, פתקים ותפריטים מתוך תמונות להצגה מובנית וברורה בעברית.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
